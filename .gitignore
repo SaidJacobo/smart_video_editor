@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.analisis.json
+*.kdenlive
+!ejemplo_*.kdenlive
