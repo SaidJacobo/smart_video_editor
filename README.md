@@ -18,6 +18,9 @@ Kdenlive para seguir editando.
 - `ffmpeg` / `ffprobe` en el PATH
 - `numpy` (`pip install -r requirements.txt`)
 - (Opcional, para validar el XML generado sin abrir Kdenlive) `melt`
+- (Opcional, para [clasificación de contenido](#clasificación-de-contenido-v31))
+  `faster-whisper` (`pip install -r requirements.txt`) + [ollama](https://ollama.com)
+  corriendo local con un modelo de texto descargado
 
 ## Uso
 
@@ -131,6 +134,101 @@ superpuestos), activala así:
   }
 }
 ```
+
+## Clasificación de contenido (v3.1)
+
+Reemplaza (opcionalmente) el criterio de corte por volumen/silencio por uno
+basado en **contenido**: transcribe ambas pistas (voz del jugador + diálogo
+del juego) con Whisper local y le pide a un LLM que clasifique cada ventana
+de la sesión en `divertido_interesante`, `relleno` o `neutro`. Los tramos
+`relleno` se cortan aunque tengan volumen; los tramos sin transcripción
+posible (sin diálogo de ningún lado) se mantienen por default en vez de
+cortarse, para no perder cinemáticas silenciosas. Ver
+`spec_clasificacion_contenido.md` para el detalle del criterio.
+
+Está apagado por default (`transcription.enabled: false` en la config) — sin
+tocar nada, el editor se comporta exactamente igual que antes (silencio +
+RMS).
+
+### Setup
+
+```bash
+# 1. instalar dependencias python (ya incluye faster-whisper)
+pip install -r requirements.txt
+
+# 2. instalar y levantar ollama (una sola vez)
+sudo pacman -S ollama        # o el instalador que corresponda a tu distro
+ollama serve &                # si no lo tenés corriendo ya como servicio
+ollama pull qwen2.5:7b-instruct
+```
+
+### Uso: `reclasificar.py`
+
+Es un CLI aparte de `editor.py`, pensado para una sesión (gameplay+webcam) a
+la vez — corre transcripción + clasificación y genera el `.kdenlive` largo
+con esos cortes.
+
+```bash
+source venv/bin/activate
+
+python3 reclasificar.py \
+  --titulo mi_sesion \
+  --gameplay "/ruta/a/gameplay.mp4" \
+  --webcam   "/ruta/a/webcam.mp4" \
+  --output-dir "/ruta/de/salida"
+# -> mi_sesion_long.kdenlive, con keep_segments derivados de la clasificacion
+```
+
+Con una sesión de ~50 min y modelo `medium`, calculá ~6 min de transcripción
++ ~30-35 min de clasificación (el cuello de botella es la llamada a ollama
+por ventana, no Whisper). Se cachea en tres archivos junto al `.kdenlive`:
+
+| Cache | Qué guarda | Se invalida cuando... |
+|---|---|---|
+| `<titulo>.analisis.json` | silencios + highlights por RMS (igual que siempre) | cambia el mtime de `--gameplay`/`--webcam` |
+| `<titulo>.transcripcion.json` | segmentos `{inicio, fin, texto, fuente}` de ambas pistas | cambia el mtime de los fuentes, el modelo de whisper, o `max_word_gap_sec` |
+| `<titulo>.clasificacion.json` | categoría por ventana | cambia el texto transcripto, el prompt, el modelo o las categorías |
+
+Por eso corridas repetidas con el mismo `--titulo`/`--output-dir` son
+prácticamente gratis salvo que fuerces algo explícitamente:
+
+- `--force-analysis`: reprocesa silencio/RMS.
+- `--force-transcripcion`: vuelve a correr Whisper (ej. si cambiaste el
+  modelo, o si corregiste algo del post-procesado de segmentos).
+- `--force-clasificacion`: vuelve a llamar a ollama por ventana (ej. si
+  cambiaste el prompt, las categorías, o el modelo de clasificación).
+
+**Generar variantes del corte sin recalcular nada:** una vez que
+`<titulo>.clasificacion.json` está generado, podés pedir un corte más
+agresivo con `--categorias` (sin pasar ningún `--force-*`, reusa todo lo
+cacheado y es casi instantáneo):
+
+```bash
+# corte "solo lo mejor": únicamente ventanas divertido_interesante
+python3 reclasificar.py \
+  --titulo mi_sesion \
+  --gameplay "/ruta/a/gameplay.mp4" \
+  --webcam   "/ruta/a/webcam.mp4" \
+  --output-dir "/ruta/de/salida" \
+  --categorias divertido_interesante \
+  --nombre-salida mi_sesion_solo_relevante
+# -> mi_sesion_solo_relevante_long.kdenlive
+```
+
+Sin `--categorias`, el corte por default conserva todo lo que no sea
+`relleno` (`divertido_interesante` + `neutro` + tramos sin transcripción).
+
+### Config relevante
+
+| Sección | Campo | Qué controla |
+|---|---|---|
+| `transcription.enabled` | `true`/`false` | prende v3.1. Con `false`, `reclasificar.py` no tiene sentido usarlo (usá `editor.py` directo). |
+| `transcription.model` | `tiny`\|`small`\|`medium`\|`large` | modelo de Whisper. `medium` midió ~16x tiempo real en CPU (Intel Ultra 7, sin GPU) — no hace falta bajar a `small` salvo que el hardware sea más limitado. |
+| `transcription.max_word_gap_sec` | segundos | si el hueco entre dos palabras de un mismo segmento de Whisper supera esto, se re-parte en sub-segmentos. Corrige un bug real de Whisper/VAD que a veces agrupa frases separadas por silencios largos (vimos casos de 60-127s) en un solo segmento con el timestamp inflado. |
+| `classification.backend` | `ollama` \| `api` | motor de clasificación. Solo `ollama` está implementado hoy. |
+| `classification.model` | nombre del modelo ollama | usar un modelo de texto general (`qwen2.5:7b-instruct`), no uno de código. |
+| `classification.window_sec` / `overlap_sec` | segundos | tamaño de ventana a clasificar y margen de contexto para no cortar una idea al medio. |
+| `classification.categories` | lista | categorías a usar en el prompt; ajustable si no discriminan bien en la práctica. |
 
 ## Alcance actual
 

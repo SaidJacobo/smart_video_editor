@@ -34,6 +34,26 @@ DEFAULT_CONFIG = {
         "min_gap_sec": 25.0,
         "max_highlights": 20,
     },
+    "transcription": {
+        # activa v3.1 (transcripcion + clasificacion); si esta en False el
+        # pipeline funciona exactamente igual a la v1 (silencio + RMS).
+        "enabled": False,
+        "model": "medium",
+        "compute_type": "int8",
+        "vad_filter": True,
+        "beam_size": 5,
+        # si el hueco entre dos palabras de un mismo segmento de Whisper supera
+        # esto, se re-parte en sub-segmentos (ver transcription._resegment_by_word_gaps)
+        "max_word_gap_sec": 2.0,
+    },
+    "classification": {
+        "backend": "ollama",  # "ollama" | "api"
+        "model": "qwen2.5:7b-instruct",
+        "window_sec": 45.0,
+        "overlap_sec": 10.0,
+        "context_windows": 2,
+        "categories": ["divertido_interesante", "relleno", "neutro"],
+    },
     "long": {
         # posicion/tamano del recuadro de webcam, en % del canvas (0-1)
         "webcam_rect_pct": {"x": 0.71, "y": 0.02, "w": 0.27, "h": None},

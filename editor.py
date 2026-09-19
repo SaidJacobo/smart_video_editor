@@ -15,7 +15,7 @@ import argparse
 import os
 import sys
 
-from gameplay_editor import audio_analysis, project_long, project_short, session_folder
+from gameplay_editor import audio_analysis, classification, project_long, project_short, session_folder
 from gameplay_editor.config import load_config
 
 
@@ -38,6 +38,15 @@ def _sanitize(text):
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
 
 
+def _analyze_session(gp, wc, cfg, cache_key, project_dir, force):
+    analysis = audio_analysis.analyze(gp, wc, cfg, cache_key, output_dir=project_dir, force=force)
+    if cfg["transcription"]["enabled"]:
+        analysis = classification.apply_to_analysis(
+            analysis, gp, wc, cfg, cache_key, output_dir=project_dir, force=force,
+        )
+    return analysis
+
+
 def _resolve_sessions(args, cfg, project_dir):
     if args.carpeta:
         if args.gameplay or args.webcam:
@@ -50,13 +59,13 @@ def _resolve_sessions(args, cfg, project_dir):
         sessions = []
         for prefix, gp, wc in pairs:
             cache_key = f"{args.titulo}__{_sanitize(prefix)}"
-            analysis = audio_analysis.analyze(gp, wc, cfg, cache_key, output_dir=project_dir, force=args.force_analysis)
+            analysis = _analyze_session(gp, wc, cfg, cache_key, project_dir, args.force_analysis)
             sessions.append({"gameplay": gp, "webcam": wc, "analysis": analysis})
         return sessions
 
     if not (args.gameplay and args.webcam):
         sys.exit("Especifica --gameplay junto con --webcam, o --carpeta")
-    analysis = audio_analysis.analyze(args.gameplay, args.webcam, cfg, args.titulo, output_dir=project_dir, force=args.force_analysis)
+    analysis = _analyze_session(args.gameplay, args.webcam, cfg, args.titulo, project_dir, args.force_analysis)
     return [{"gameplay": args.gameplay, "webcam": args.webcam, "analysis": analysis}]
 
 
