@@ -1,178 +1,135 @@
 #!/usr/bin/env python3
-"""Editor automatico de gameplays: pre-corte de silencios + composicion PiP +
-deteccion de highlights, generando proyectos Kdenlive listos para ajuste fino manual.
+"""Editor automatico de gameplays: transcribe ambas pistas (webcam + juego),
+clasifica el contenido con un LLM para decidir que conservar, compone el
+video largo (gameplay a pantalla completa + webcam en PiP) y genera shorts
+verticales (9:16) alrededor de los momentos clasificados como interesantes.
+Genera proyectos Kdenlive listos para ajuste fino manual. No renderiza nada.
 
 Uso:
-    python3 editor.py both  --titulo re9_ep12 --gameplay gameplay.mp4 --webcam webcam.mp4
-    python3 editor.py long  --titulo re9_ep12 --gameplay gameplay.mp4 --webcam webcam.mp4
-    python3 editor.py short --titulo re9_ep12 --gameplay gameplay.mp4 --webcam webcam.mp4
+    python3 editor.py --titulo re9_ep12 --gameplay gameplay.mp4 --webcam webcam.mp4
 
 Con varias grabaciones de la misma partida (se empalman en orden cronologico
 en un solo proyecto, por el prefijo del nombre de archivo):
-    python3 editor.py both --titulo re9_ep12 --carpeta /ruta/a/la/partida/
+    python3 editor.py --titulo re9_ep12 --folder /ruta/a/la/partida/
+
+Requiere ollama corriendo (`ollama serve`) con el modelo de
+cfg["classification"]["model"] ya descargado (`ollama pull <modelo>`).
+
+Genera siempre <titulo>_long.kdenlive y <titulo>_shorts.kdenlive en
+--output-dir. Si alguno ya existe, el script no lo pisa: hay que borrarlo a
+mano antes de correr de nuevo.
+
+Ver spec_clasificacion_contenido.md para el detalle del criterio de
+clasificacion. El cortador de silencios/RMS original (gameplay_editor/audio_analysis.py:analyze)
+sigue en el repo pero este script ya no lo usa.
 """
 import argparse
 import os
 import sys
+from collections import Counter
 
-from gameplay_editor import audio_analysis, classification, project_long, project_short, session_folder
+from gameplay_editor import audio_analysis, classification, project_long, project_short, session_folder, transcription
 from gameplay_editor.config import load_config
 
 
-def _common_args(parser):
-    parser.add_argument("--titulo", required=True, help="Nombre base, sin sufijo (_long/_short se agrega solo)")
-    parser.add_argument("--gameplay", default=None, help="Archivo de video+audio del gameplay (usar junto con --webcam)")
-    parser.add_argument("--webcam", default=None, help="Archivo de video+audio de la webcam (usar junto con --gameplay)")
-    parser.add_argument("--carpeta", default=None,
-                         help="Carpeta con varias grabaciones -gameplay/-webcam (mismo prefijo de nombre) a "
-                              "empalmar en orden cronologico en un solo proyecto")
-    parser.add_argument("--config", default=None, help="Config JSON (ver config.example.json)")
-    parser.add_argument("--output-dir", default=".",
-                         help="Carpeta base de salida (adentro se crea una carpeta con el nombre del titulo). "
-                              "Se ignora si se usa --carpeta: ahi el proyecto largo se guarda directo en esa "
-                              "carpeta y los shorts en una subcarpeta 'shorts' dentro de ella")
-    parser.add_argument("--force-analysis", action="store_true", help="Ignora el cache de analisis y lo recalcula")
+def _build_session(gameplay_path, webcam_path, cfg, cache_key, output_dir, force_clasification):
+    print(f"--- {cache_key} ---")
+    gp_info, wc_info, duration = audio_analysis.probe_videos(gameplay_path, webcam_path)
+
+    print("  Transcripcion (Whisper, puede tardar varios minutos)...")
+    transcripcion = transcription.transcribe(
+        gameplay_path, webcam_path, cfg["transcription"], cache_key, output_dir=output_dir,
+    )
+    print(f"    jugador: {len(transcripcion['jugador'])} segmentos, juego: {len(transcripcion['juego'])} segmentos")
+
+    print("  Clasificacion por LLM (ollama, una llamada por ventana)...")
+    classified = classification.classify(
+        transcripcion, cfg["classification"], cache_key,
+        output_dir=output_dir, force=force_clasification, duration=duration,
+    )
+    print(f"    {len(classified)} ventanas -> {dict(Counter(w['categoria'] for w in classified))}")
+
+    keep = classification.merge_keep_segments(classified, duration)
+    kept_sec = sum(e - s for s, e in keep)
+    print(f"    keep_segments: {len(keep)} tramos, {kept_sec:.1f}s de {duration:.1f}s "
+          f"({100 * kept_sec / duration:.1f}%)")
+
+    analysis = {
+        "duration": duration,
+        "gameplay_info": gp_info,
+        "webcam_info": wc_info,
+        "keep_segments": keep,
+        "highlights": classification.classification_highlights(classified),
+    }
+    return {"gameplay": gameplay_path, "webcam": webcam_path, "analysis": analysis}
 
 
-def _analyze_session(gp, wc, cfg, cache_key, project_dir, force):
-    analysis = audio_analysis.analyze(gp, wc, cfg, cache_key, output_dir=project_dir, force=force)
-    if cfg["transcription"]["enabled"]:
-        analysis = classification.apply_to_analysis(
-            analysis, gp, wc, cfg, cache_key, output_dir=project_dir, force=force,
-        )
-    return analysis
-
-
-def _resolve_sessions(args, cfg, project_dir):
-    if args.carpeta:
-        if args.gameplay or args.webcam:
-            sys.exit("--carpeta no se puede combinar con --gameplay/--webcam")
-        pairs, warnings = session_folder.discover_pairs(args.carpeta)
+def _resolve_sessions(args, cfg, output_dir):
+    if args.folder:
+        pairs, warnings = session_folder.discover_pairs(args.folder)
         for w in warnings:
             print(f"AVISO: {w}")
         if not pairs:
-            sys.exit(f"No se encontraron pares -gameplay/-webcam en {args.carpeta}")
-        sessions = []
-        for prefix, gp, wc in pairs:
-            cache_key = f"{args.titulo}__{session_folder.sanitize_prefix(prefix)}"
-            analysis = _analyze_session(gp, wc, cfg, cache_key, project_dir, args.force_analysis)
-            sessions.append({"gameplay": gp, "webcam": wc, "analysis": analysis})
-        return sessions
-
-    if not (args.gameplay and args.webcam):
-        sys.exit("Especifica --gameplay junto con --webcam, o --carpeta")
-    analysis = _analyze_session(args.gameplay, args.webcam, cfg, args.titulo, project_dir, args.force_analysis)
-    return [{"gameplay": args.gameplay, "webcam": args.webcam, "analysis": analysis}]
-
-
-def _print_report(analyses, long_path=None, short_path=None):
-    print("--- Reporte ---")
-    total_original = total_kept = 0.0
-    total_highlights = total_peaks = 0
-    total_peaks_sec = 0.0
-    for i, analysis in enumerate(analyses, start=1):
-        original = analysis["duration"]
-        kept = sum(e - s for s, e in analysis["keep_segments"])
-        peaks = analysis.get("protected_peaks") or []
-        total_original += original
-        total_kept += kept
-        total_highlights += len(analysis["highlights"])
-        total_peaks += len(peaks)
-        total_peaks_sec += sum(e - s for s, e in peaks)
-        if len(analyses) > 1:
-            pct = 100 * (1 - kept / original) if original else 0
-            print(f"  Sesion {i}: {original:.1f}s -> {kept:.1f}s ({pct:.1f}% recortado), "
-                  f"{len(analysis['highlights'])} highlights")
-    pct = 100 * (1 - total_kept / total_original) if total_original else 0
-    print(f"Duracion original: {total_original:.1f}s  ->  post-corte de silencios: {total_kept:.1f}s ({pct:.1f}% recortado)")
-    print(f"Highlights detectados: {total_highlights}")
-    if total_peaks:
-        print(f"Picos de gameplay protegidos del corte: {total_peaks} ({total_peaks_sec:.1f}s)")
-    if long_path:
-        print(f"Proyecto largo: {long_path}")
-    if short_path:
-        print(f"Proyecto de shorts: {short_path}")
-
-
-def _long_dir(args):
-    """Carpeta donde va el proyecto largo (y el cache de analisis). Con
-    --carpeta, es la propia carpeta de grabaciones; si no, output-dir/titulo."""
-    if args.carpeta:
-        path = args.carpeta
-    else:
-        path = os.path.join(args.output_dir, args.titulo)
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def _shorts_dir(args, long_dir):
-    """Carpeta donde va el proyecto de shorts. Con --carpeta, una subcarpeta
-    'shorts' dentro de la carpeta de grabaciones; si no, la misma que el largo."""
-    if args.carpeta:
-        path = os.path.join(args.carpeta, "shorts")
-        os.makedirs(path, exist_ok=True)
-        return path
-    return long_dir
-
-
-def cmd_long(args):
-    cfg = load_config(args.config)
-    long_dir = _long_dir(args)
-    sessions = _resolve_sessions(args, cfg, long_dir)
-    if len(sessions) == 1:
-        s = sessions[0]
-        out_path = project_long.build(s["gameplay"], s["webcam"], cfg, s["analysis"], args.titulo, long_dir)
-    else:
-        out_path = project_long.build_multi(sessions, cfg, args.titulo, long_dir)
-    _print_report([s["analysis"] for s in sessions], long_path=out_path)
-
-
-def cmd_short(args):
-    cfg = load_config(args.config)
-    long_dir = _long_dir(args)
-    short_dir = _shorts_dir(args, long_dir)
-    sessions = _resolve_sessions(args, cfg, long_dir)
-    if len(sessions) == 1:
-        s = sessions[0]
-        out_path = project_short.build_all(s["gameplay"], s["webcam"], cfg, s["analysis"], args.titulo, short_dir)
-    else:
-        out_path = project_short.build_all_multi(sessions, cfg, args.titulo, short_dir)
-    _print_report([s["analysis"] for s in sessions], short_path=out_path)
-
-
-def cmd_both(args):
-    cfg = load_config(args.config)
-    long_dir = _long_dir(args)
-    short_dir = _shorts_dir(args, long_dir)
-    sessions = _resolve_sessions(args, cfg, long_dir)
-    if len(sessions) == 1:
-        s = sessions[0]
-        long_path = project_long.build(s["gameplay"], s["webcam"], cfg, s["analysis"], args.titulo, long_dir)
-        short_path = project_short.build_all(s["gameplay"], s["webcam"], cfg, s["analysis"], args.titulo, short_dir)
-    else:
-        long_path = project_long.build_multi(sessions, cfg, args.titulo, long_dir)
-        short_path = project_short.build_all_multi(sessions, cfg, args.titulo, short_dir)
-    _print_report([s["analysis"] for s in sessions], long_path=long_path, short_path=short_path)
+            sys.exit(f"No se encontraron pares -gameplay/-webcam (o -ps5/-webcam) en {args.folder}")
+        print(f"Encontradas {len(pairs)} sesion(es): {', '.join(p for p, _, _ in pairs)}")
+        return [
+            _build_session(
+                gp, wc, cfg, f"{args.titulo}__{session_folder.sanitize_prefix(prefix)}",
+                output_dir, args.force_clasification,
+            )
+            for prefix, gp, wc in pairs
+        ]
+    return [_build_session(args.gameplay, args.webcam, cfg, args.titulo, output_dir, args.force_clasification)]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_long = sub.add_parser("long", help="Genera solo el proyecto largo")
-    _common_args(p_long)
-    p_long.set_defaults(func=cmd_long)
-
-    p_short = sub.add_parser("short", help="Genera solo los proyectos de shorts")
-    _common_args(p_short)
-    p_short.set_defaults(func=cmd_short)
-
-    p_both = sub.add_parser("both", help="Genera ambos proyectos")
-    _common_args(p_both)
-    p_both.set_defaults(func=cmd_both)
-
+    parser.add_argument("--titulo", required=True, help="Nombre base de los archivos de salida y del cache")
+    parser.add_argument("--gameplay", default=None, help="Video del gameplay (usar junto con --webcam)")
+    parser.add_argument("--webcam", default=None, help="Video de la webcam (usar junto con --gameplay)")
+    parser.add_argument("--folder", default=None,
+                         help="Carpeta con varias grabaciones -gameplay/-webcam (o -ps5/-webcam) a "
+                              "empalmar en orden cronologico en un solo proyecto")
+    parser.add_argument("--output-dir", default=None,
+                         help="Carpeta de salida (default: la propia --folder, si se uso esa opcion)")
+    parser.add_argument("--force-clasification", action="store_true",
+                         help="Ignora el cache de clasificacion y vuelve a llamar a ollama por ventana. "
+                              "La transcripcion se sigue invalidando sola por mtime de los videos; para "
+                              "forzarla sin eso, borrar el .transcripcion.json a mano.")
     args = parser.parse_args()
-    args.func(args)
+
+    if args.folder and (args.gameplay or args.webcam):
+        sys.exit("--folder no se puede combinar con --gameplay/--webcam")
+    if not args.folder and not (args.gameplay and args.webcam):
+        sys.exit("Especifica --gameplay junto con --webcam, o --folder")
+
+    output_dir = args.output_dir or args.folder
+    if not output_dir:
+        sys.exit("--output-dir es obligatorio si no usaste --folder")
+    os.makedirs(output_dir, exist_ok=True)
+
+    long_path = os.path.join(output_dir, f"{args.titulo}_long.kdenlive")
+    shorts_path = os.path.join(output_dir, f"{args.titulo}_shorts.kdenlive")
+    existentes = [p for p in (long_path, shorts_path) if os.path.exists(p)]
+    if existentes:
+        sys.exit(
+            "Ya existe(n): " + ", ".join(existentes) +
+            " -- borralos a mano si queres regenerarlos (este script no los pisa)."
+        )
+
+    cfg = load_config()
+    sessions = _resolve_sessions(args, cfg, output_dir)
+
+    if len(sessions) > 1:
+        out_long = project_long.build_multi(sessions, cfg, args.titulo, output_dir)
+        out_shorts = project_short.build_all_multi(sessions, cfg, args.titulo, output_dir)
+    else:
+        s = sessions[0]
+        out_long = project_long.build(s["gameplay"], s["webcam"], cfg, s["analysis"], args.titulo, output_dir)
+        out_shorts = project_short.build_all(s["gameplay"], s["webcam"], cfg, s["analysis"], args.titulo, output_dir)
+
+    print("Proyecto largo generado:", out_long)
+    print("Proyecto de shorts generado:", out_shorts)
 
 
 if __name__ == "__main__":

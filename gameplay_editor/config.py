@@ -35,9 +35,6 @@ DEFAULT_CONFIG = {
         "max_highlights": 20,
     },
     "transcription": {
-        # activa v3.1 (transcripcion + clasificacion); si esta en False el
-        # pipeline funciona exactamente igual a la v1 (silencio + RMS).
-        "enabled": False,
         "model": "medium",
         "compute_type": "int8",
         "vad_filter": True,

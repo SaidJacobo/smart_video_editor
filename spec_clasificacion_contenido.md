@@ -151,10 +151,11 @@ de escenario de forma más precisa que agrupar por huecos temporales.
 
 ---
 
-## Estado de implementación (actualizado 2026-09-19)
+## Estado de implementación (actualizado 2026-09-22)
 
-**v3.1 (Pasos 1-3): implementado y validado con datos reales**, apagado por
-default (`config.transcription.enabled: false`).
+**v3.1 (Pasos 1-3): implementado, validado con datos reales, y es el único
+comportamiento de `editor.py`** (ya no es opt-in). Ver `README.md` para el
+uso actual.
 
 - `gameplay_editor/transcription.py` — Paso 1, `faster-whisper` local (CPU,
   sin CUDA). Medido sobre una sesión real de 52 min (RE, `re_9/partida_4`):
@@ -164,17 +165,19 @@ default (`config.transcription.enabled: false`).
   (`window_sec`/`overlap_sec` configurables), backend `ollama` con
   `qwen2.5:7b-instruct`. Sobre la misma sesión: ~36 min para clasificar 70
   ventanas (el cuello de botella real es esto, no la transcripción).
-- `reclasificar.py` — CLI standalone para correr/re-correr todo sobre una
-  sesión (transcripción + clasificación + proyecto largo y/o shorts), con
-  cache en tres capas (`.analisis.json` / `.transcripcion.json` /
-  `.clasificacion.json`) y flags `--force-*` independientes por capa.
-  Soporta `--categorias` (corte alternativo con solo ciertas categorías,
-  gratis si ya está clasificado) y `--sin-largo --shorts` (regenerar solo
-  shorts sin tocar un proyecto largo editado a mano).
-- Wiring en `editor.py`: con `transcription.enabled: true`, `_analyze_session()`
-  reemplaza `keep_segments`/`highlights` por los derivados de clasificación
-  (conservando los de RMS/silencio bajo `keep_segments_silencio`/`highlights_rms`
-  para comparar).
+- `editor.py` — CLI único (se retiró `reclasificar.py`, su lógica se
+  fusionó acá). Sin subcomandos: cada corrida genera siempre
+  `<titulo>_long.kdenlive` y `<titulo>_shorts.kdenlive`, para una sesión
+  (`--gameplay`/`--webcam`) o una carpeta con varias (`--folder`). Un solo
+  flag de cache: `--force-clasification` (la transcripción se invalida sola
+  por mtime de los videos). Si el archivo de salida ya existe, el script
+  aborta antes de procesar en vez de pisarlo (hay que borrarlo a mano).
+- **Desacoplado del cortador de silencios/RMS (v1)**: `audio_analysis.analyze()`
+  sigue intacto en el repo pero `editor.py` ya no lo llama — solo usa
+  `audio_analysis.probe_videos()` (metadata liviana: fps/duración/dimensiones,
+  sin silencedetect ni RMS). El código de v1 queda disponible para un fork
+  futuro orientado a otro caso de uso, pero no es alcanzable desde la CLI
+  actual. `config.transcription.enabled` se eliminó (ya no es un toggle).
 
 **Resultado medido vs. v1** (misma sesión, silencio+RMS vs. clasificación):
 retención 21.3% → **72.8%** del video. Confirma que v1 sobre-cortaba

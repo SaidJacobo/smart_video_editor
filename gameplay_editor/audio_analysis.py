@@ -141,7 +141,25 @@ def _sources_signature(paths):
     return {p: os.path.getmtime(p) for p in paths}
 
 
+def probe_videos(gameplay_path, webcam_path):
+    """Metadata basica (fps/dimensiones/duracion/has_audio) de un par
+    gameplay+webcam, sin nada de deteccion de silencio ni RMS -- lo minimo
+    que necesita el resto del pipeline (project_long/project_short) para
+    armar el proyecto, independientemente de que criterio de corte se use.
+    Separado de analyze() para poder usar el pipeline de clasificacion de
+    contenido sin correr el cortador de silencios (ver reference/analyze()
+    para ese flujo, que sigue intacto para quien lo necesite)."""
+    gp_info = ffmpeg_utils.video_info(gameplay_path)
+    wc_info = ffmpeg_utils.video_info(webcam_path)
+    duration = min(gp_info["duration"], wc_info["duration"])
+    return gp_info, wc_info, duration
+
+
 def analyze(gameplay_path, webcam_path, cfg, titulo, output_dir=None, force=False):
+    """Cortador de silencios + highlights por RMS (v1/v2.B). No lo usa el
+    flujo por default de editor.py (que usa clasificacion de contenido via
+    transcription.py/classification.py) -- se deja intacto para un uso
+    futuro (ver spec_clasificacion_contenido.md, seccion de estado)."""
     cache_file = _cache_path(titulo, output_dir)
     sig = _sources_signature([gameplay_path, webcam_path])
 
@@ -154,9 +172,7 @@ def analyze(gameplay_path, webcam_path, cfg, titulo, output_dir=None, force=Fals
         except (json.JSONDecodeError, OSError):
             pass
 
-    gp_info = ffmpeg_utils.video_info(gameplay_path)
-    wc_info = ffmpeg_utils.video_info(webcam_path)
-    duration = min(gp_info["duration"], wc_info["duration"])
+    gp_info, wc_info, duration = probe_videos(gameplay_path, webcam_path)
 
     ref = cfg["silence"]["reference"]
     noise_db = cfg["silence"]["noise_db"]
