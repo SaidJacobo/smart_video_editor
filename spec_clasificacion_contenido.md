@@ -151,6 +151,138 @@ de escenario de forma más precisa que agrupar por huecos temporales.
 
 ---
 
+## Estado de implementación (actualizado 2026-09-19)
+
+**v3.1 (Pasos 1-3): implementado y validado con datos reales**, apagado por
+default (`config.transcription.enabled: false`).
+
+- `gameplay_editor/transcription.py` — Paso 1, `faster-whisper` local (CPU,
+  sin CUDA). Medido sobre una sesión real de 52 min (RE, `re_9/partida_4`):
+  modelo `medium`, ~6.2 min para transcribir ambas pistas (~16.8x tiempo
+  real) — no hace falta bajar a `small`.
+- `gameplay_editor/classification.py` — Paso 2 y 3. Ventanas de 45s
+  (`window_sec`/`overlap_sec` configurables), backend `ollama` con
+  `qwen2.5:7b-instruct`. Sobre la misma sesión: ~36 min para clasificar 70
+  ventanas (el cuello de botella real es esto, no la transcripción).
+- `reclasificar.py` — CLI standalone para correr/re-correr todo sobre una
+  sesión (transcripción + clasificación + proyecto largo y/o shorts), con
+  cache en tres capas (`.analisis.json` / `.transcripcion.json` /
+  `.clasificacion.json`) y flags `--force-*` independientes por capa.
+  Soporta `--categorias` (corte alternativo con solo ciertas categorías,
+  gratis si ya está clasificado) y `--sin-largo --shorts` (regenerar solo
+  shorts sin tocar un proyecto largo editado a mano).
+- Wiring en `editor.py`: con `transcription.enabled: true`, `_analyze_session()`
+  reemplaza `keep_segments`/`highlights` por los derivados de clasificación
+  (conservando los de RMS/silencio bajo `keep_segments_silencio`/`highlights_rms`
+  para comparar).
+
+**Resultado medido vs. v1** (misma sesión, silencio+RMS vs. clasificación):
+retención 21.3% → **72.8%** del video. Confirma que v1 sobre-cortaba
+(falsos positivos). Con esa retención tan alta, el Paso 4 pasa a ser más
+necesario de lo previsto — sin él, el video largo queda apenas más corto
+que el original, sin selección activa de "lo mejor de cada escenario".
+
+**Dos bugs reales encontrados y corregidos** (por inspección manual de
+casos puntuales, no por tests automatizados — todavía no hay suite de
+tests sobre `transcription.py`/`classification.py`):
+
+1. **Segmentos de Whisper con duración inflada por silencios internos.**
+   El VAD a veces agrupa frases separadas por silencios largos (vimos
+   casos de 60-127s de "duración" para 2-3 palabras) en un solo segmento,
+   arrastrando el timestamp de la primera palabra al de la última. Fix:
+   `word_timestamps=True` + re-segmentación por hueco interno
+   (`transcription._resegment_by_word_gaps`, config `max_word_gap_sec`,
+   default 2.0s).
+2. **Highlights de shorts centrados en el punto medio de la ventana de 45s
+   en vez del momento real de habla.** Si el contenido que disparó
+   `divertido_interesante` está pegado a un borde de ventana (o entró por
+   el margen de `overlap_sec`), el short quedaba centrado en silencio. Fix:
+   cada ventana guarda `evidencia` (rango real de timestamps de los
+   segmentos que aportaron texto), y `classification_highlights()` centra
+   ahí en vez de en el punto medio del grid. Afectó 9 de 14 highlights en
+   la sesión de prueba (deltas de hasta 30s).
+
+**Nota sobre los "tramos" del video largo:** las duraciones variables que
+se ven en Kdenlive (45s hasta 765s en la sesión de prueba) no son las
+ventanas de clasificación en sí — son el resultado de fusionar (`merge_intervals`)
+ventanas consecutivas que resultaron todas no-`relleno`. Cada ventana se
+clasifica de forma independiente (el LLM no sabe de las otras); que varias
+seguidas den "conservar" es lo que genera un clip largo en el timeline, no
+un agrupamiento semántico — eso es justamente lo que Paso 4 vendría a
+agregar.
+
+### Diseño para Paso 4 (discutido, no implementado)
+
+Decisión de encarar la agrupación en escenas con una **combinación de texto
++ visión desde el principio**, no texto-primero-visión-después-si-hace-falta
+como sugería la v3.2 original: con datos reales de la sesión de prueba, el
+audio del juego generó solo 8 segmentos en 52 minutos, y el jugador rara
+vez verbaliza transiciones explícitamente — el texto es una señal débil
+para algo que es fundamentalmente visual (cambio de sala, cinemática,
+iluminación). Insistir en resolverlo solo con texto probablemente no
+alcance.
+
+**Diseño acordado:**
+
+1. **Clasificación de contenido corre igual que hoy** (Pasos 1-3), filtra
+   `relleno`.
+2. **Por cada ventana no-`relleno`** (para no desperdiciar procesamiento en
+   lo que ya se descarta), samplear 1 frame representativo del gameplay
+   (punto medio de `evidencia`, o de la ventana si no hay).
+3. **Modelo de visión** (local vía ollama si la calidad alcanza —
+   `llava`/`moondream`/`qwen2.5vl` a evaluar — o API si no) genera una
+   descripción corta del frame: tipo de escena (combate, cinemática,
+   exploración, menú) + detalle breve.
+4. Esa descripción se inyecta como una línea más en el mismo texto que ya
+   arma `_format_segments()` en `classification.py` (junto a `[jugador]` /
+   `[juego]`), como `[escena] <descripción>` — el LLM de clasificación
+   **sigue siendo de texto**, no se lo pasa a multimodal.
+5. El mismo LLM de clasificación (misma llamada, sin costo extra) devuelve
+   además `nueva_escena: true/false` por ventana, ahora con evidencia
+   visual real de respaldo, no solo lo que se dijo.
+6. Agrupar en escenas: cortar una escena nueva en cada `nueva_escena=true`.
+7. Selección dentro de cada escena (greedy, orden cronológico): siempre
+   entran `divertido_interesante` y `sin_transcripcion`; completar con
+   `neutro` hasta un piso configurable (`curation.min_keep_per_scene_sec`)
+   para no vaciar contexto narrativo; `relleno` queda afuera salvo que ni
+   así se llegue al piso (ahí preferir escena corta + warning en vez de
+   forzar contenido malo).
+8. Si `curation.target_duration_sec` está seteado y el total excede el
+   objetivo, segunda pasada global: recortar los `neutro` más lejanos a
+   cualquier `divertido_interesante`, respetando siempre el piso por
+   escena.
+9. Vive en un módulo nuevo `gameplay_editor/curation.py` (no en
+   `classification.py`), consume la salida de `classification.classify()`.
+
+**Idea adicional a validar: pasarle el nombre/identidad del juego como
+contexto en el prompt** (config `classification.juego`), para que el LLM
+pueda usar su propio conocimiento del juego al interpretar una escena.
+Riesgo real a vigilar: alucinación — un modelo local chico puede tener
+conocimiento parcial o inventado de un título específico, y sustituir
+evidencia observada por suposiciones de trama ("en esta parte del juego
+suele pasar X"). Mitigación: encuadrarlo en el prompt explícitamente como
+contexto de ambientación secundario, nunca como fuente de verdad por
+encima de lo que efectivamente dice el texto/la imagen de esa ventana
+puntual. Probablemente ayude más al modelo de visión (describir con más
+precisión lo que ve, ej. reconocer HUD/iconografía típica del género) que
+al LLM de clasificación de texto.
+
+**Validación antes de confiar en esto** (mismo patrón que v3.1): generar un
+resumen por escena en texto plano (cuántas ventanas, duración
+original/conservada, qué se cortó) para revisar a mano antes de gastar
+tiempo mirándolo en Kdenlive. Prestar atención especial a si el campo
+`razon` empieza a justificar clasificaciones con suposiciones de trama en
+vez de evidencia concreta de esa ventana — señal de que el contexto del
+juego está pesando más de lo debido.
+
+**Pendiente para retomar:** elegir y probar un modelo de visión disponible
+en el hardware actual (Intel Ultra 7, sin GPU dedicada) con frames reales
+de esta sesión antes de comprometerse a la arquitectura completa — mismo
+criterio que se usó para validar Whisper y el LLM de clasificación de
+texto (no asumir que funciona, medirlo).
+
+---
+
 ## Puntos abiertos a resolver en la implementación
 
 - **Costo/tiempo de transcribir 2-3h de audio localmente**: medir antes de

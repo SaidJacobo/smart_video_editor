@@ -34,10 +34,6 @@ def _common_args(parser):
     parser.add_argument("--force-analysis", action="store_true", help="Ignora el cache de analisis y lo recalcula")
 
 
-def _sanitize(text):
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
-
-
 def _analyze_session(gp, wc, cfg, cache_key, project_dir, force):
     analysis = audio_analysis.analyze(gp, wc, cfg, cache_key, output_dir=project_dir, force=force)
     if cfg["transcription"]["enabled"]:
@@ -58,7 +54,7 @@ def _resolve_sessions(args, cfg, project_dir):
             sys.exit(f"No se encontraron pares -gameplay/-webcam en {args.carpeta}")
         sessions = []
         for prefix, gp, wc in pairs:
-            cache_key = f"{args.titulo}__{_sanitize(prefix)}"
+            cache_key = f"{args.titulo}__{session_folder.sanitize_prefix(prefix)}"
             analysis = _analyze_session(gp, wc, cfg, cache_key, project_dir, args.force_analysis)
             sessions.append({"gameplay": gp, "webcam": wc, "analysis": analysis})
         return sessions

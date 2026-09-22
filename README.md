@@ -4,10 +4,15 @@ Arma el pre-corte de una sesión de gameplay (gameplay + webcam grabados por
 OBS) y deja proyectos de Kdenlive listos para el ajuste fino manual:
 
 - Compone el video largo: gameplay a pantalla completa + webcam en PiP.
-- Corta los silencios (usando la pista de audio que elijas como referencia).
-- Detecta highlights por picos de volumen y los deja como *guides*
-  (marcadores) en el timeline — no corta automáticamente por ellos.
-- Genera uno o varios shorts verticales (9:16) alrededor de cada highlight.
+- Corta los silencios (usando la pista de audio que elijas como referencia),
+  o — opcionalmente — por [clasificación de contenido](#clasificación-de-contenido-v31)
+  vía transcripción + LLM en vez de volumen.
+- Detecta highlights y los deja como *guides* (marcadores) en el timeline
+  del largo — no corta automáticamente por ellos ahí. Por default son picos
+  de volumen (RMS); con la clasificación de contenido activada, son las
+  ventanas que el LLM marcó como `divertido_interesante`.
+- Genera uno o varios shorts verticales (9:16) alrededor de cada highlight
+  (con la misma fuente de highlights que el punto anterior).
 
 No renderiza nada. La salida son archivos `.kdenlive` que abrís directo en
 Kdenlive para seguir editando.
@@ -83,6 +88,35 @@ python3 editor.py long  --titulo re9_ep12 --gameplay gameplay.mp4 --webcam webca
 python3 editor.py short --titulo re9_ep12 --gameplay gameplay.mp4 --webcam webcam.mp4
 # el segundo comando reusa re9_ep12.analisis.json, no vuelve a analizar audio
 ```
+
+### Varias grabaciones de la misma partida (`--carpeta`)
+
+Si una partida quedó grabada en varios archivos (cortaste y reanudaste OBS,
+la sesión se dividió por tamaño, etc.), `--carpeta` los detecta, ordena
+cronológicamente por el nombre y los empalma en **un solo proyecto continuo**
+— en vez de pasar `--gameplay`/`--webcam` de a un par.
+
+```bash
+python3 editor.py both --titulo re9_ep12 --carpeta /ruta/a/la/partida/
+```
+
+Los archivos tienen que estar nombrados `<prefijo>-gameplay.<ext>` /
+`<prefijo>-webcam.<ext>` (o `<prefijo>-ps5.<ext>` en vez de `-gameplay`, si
+la captura es directo de consola) — el `<prefijo>` es lo que define el
+orden cronológico (funciona bien con nombres tipo `2026-07-05 14-04-37`, que
+ordenan igual como texto que como fecha) y con qué par se junta cada
+`-webcam`. Extensiones soportadas: `mp4`, `mkv`, `mov`, `avi`, `ts`, `m2ts`.
+
+Con `--carpeta`, cambia dónde se escribe la salida respecto al modo de un
+solo par:
+
+- El proyecto largo y el cache de análisis (`<titulo>__<prefijo>.analisis.json`,
+  uno por grabación encontrada) se escriben directo en `--carpeta` — `--output-dir`
+  se ignora.
+- Los shorts van a una subcarpeta `shorts/` dentro de esa misma carpeta.
+
+Si falta el `-webcam` o el `-gameplay`/`-ps5` de algún archivo, se avisa por
+consola y ese archivo se ignora (no frena el resto).
 
 ## Config
 
@@ -164,24 +198,46 @@ ollama pull qwen2.5:7b-instruct
 
 ### Uso: `reclasificar.py`
 
-Es un CLI aparte de `editor.py`, pensado para una sesión (gameplay+webcam) a
-la vez — corre transcripción + clasificación y genera el `.kdenlive` largo
-con esos cortes.
+Es un CLI aparte de `editor.py`. Corre transcripción + clasificación y
+genera el `.kdenlive` con esos cortes, para una sesión o para una carpeta
+con varias.
 
 ```bash
 source venv/bin/activate
 
+# una sesion
 python3 reclasificar.py \
   --titulo mi_sesion \
   --gameplay "/ruta/a/gameplay.mp4" \
   --webcam   "/ruta/a/webcam.mp4" \
   --output-dir "/ruta/de/salida"
 # -> mi_sesion_long.kdenlive, con keep_segments derivados de la clasificacion
+
+# varias grabaciones de la misma partida, empalmadas en un solo proyecto
+# (mismo criterio de deteccion de pares que editor.py --carpeta: archivos
+# "<prefijo>-gameplay.<ext>" / "<prefijo>-ps5.<ext>" + "<prefijo>-webcam.<ext>",
+# ordenados cronologicamente por el prefijo)
+python3 reclasificar.py --titulo mi_partida --carpeta "/ruta/a/la/carpeta"
+# -> mi_partida_long.kdenlive (todas las sesiones de la carpeta, en orden)
 ```
+
+Con `--carpeta`, cada sesión se cachea por separado (`<titulo>__<prefijo>.*.json`)
+así que si el proceso se corta a mitad de camino, correr el mismo comando de
+nuevo retoma desde la última sesión no cacheada en vez de arrancar de cero.
+
+Flags adicionales:
+
+- `--shorts`: además del video largo, genera `<nombre-salida>_shorts.kdenlive`
+  (highlights de la clasificación, centrados en el momento real de habla —
+  ver `evidencia` en `spec_clasificacion_contenido.md`).
+- `--sin-largo`: no (re)genera el proyecto largo. Útil junto con `--shorts`
+  si ya editaste el largo a mano en Kdenlive y no querés pisarlo.
+- `--categorias`: ver más abajo, corte alternativo sin recalcular nada.
 
 Con una sesión de ~50 min y modelo `medium`, calculá ~6 min de transcripción
 + ~30-35 min de clasificación (el cuello de botella es la llamada a ollama
-por ventana, no Whisper). Se cachea en tres archivos junto al `.kdenlive`:
+por ventana, no Whisper) — con `--carpeta` estos tiempos se suman por cada
+sesión encontrada. Se cachea en tres archivos junto al `.kdenlive`:
 
 | Cache | Qué guarda | Se invalida cuando... |
 |---|---|---|
@@ -217,6 +273,8 @@ python3 reclasificar.py \
 
 Sin `--categorias`, el corte por default conserva todo lo que no sea
 `relleno` (`divertido_interesante` + `neutro` + tramos sin transcripción).
+Lo mismo aplica con `--carpeta` en vez de `--gameplay`/`--webcam` — el corte
+"solo lo relevante" de varias sesiones también reusa la cache de cada una.
 
 ### Config relevante
 
