@@ -47,9 +47,17 @@ DEFAULT_CONFIG = {
         "backend": "ollama",  # "ollama" | "api"
         "model": "qwen2.5:7b-instruct",
         "window_sec": 45.0,
-        "overlap_sec": 10.0,
         "context_windows": 2,
         "categories": ["divertido_interesante", "relleno", "neutro"],
+        # margen +/- alrededor de la evidencia real al recortar un corte
+        # "solo lo relevante" (ver classification.keep_segments_for_categories)
+        "solo_relevante_padding_sec": 8.0,
+        # timeout/reintentos por llamada a ollama. Generoso porque si ollama
+        # descargo el modelo de memoria por inactividad, la primera llamada
+        # despues de eso tiene que recargarlo de disco antes de responder.
+        "timeout_sec": 180,
+        "retries": 3,
+        "retry_backoff_sec": 10,
     },
     "long": {
         # posicion/tamano del recuadro de webcam, en % del canvas (0-1)

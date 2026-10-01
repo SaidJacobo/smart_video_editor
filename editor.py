@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Editor automatico de gameplays: transcribe ambas pistas (webcam + juego),
-clasifica el contenido con un LLM para decidir que conservar, compone el
-video largo (gameplay a pantalla completa + webcam en PiP) y genera shorts
-verticales (9:16) alrededor de los momentos clasificados como interesantes.
-Genera proyectos Kdenlive listos para ajuste fino manual. No renderiza nada.
+clasifica el contenido con un LLM y arma el video largo (gameplay a pantalla
+completa + webcam en PiP) SOLO con lo relevante: momentos clasificados como
+divertido_interesante + diálogo real del juego (siempre, sin pasar por
+clasificacion). Silencio total (sin transcripcion en ninguna pista) se
+corta por default junto con todo lo demas -- ver --con-neutro para un corte
+mas completo. Tambien genera shorts verticales (9:16) alrededor de cada
+momento divertido_interesante. Genera proyectos Kdenlive listos para ajuste
+fino manual. No renderiza nada.
 
 Uso:
     python3 editor.py --titulo re9_ep12 --gameplay gameplay.mp4 --webcam webcam.mp4
@@ -32,7 +36,7 @@ from gameplay_editor import audio_analysis, classification, project_long, projec
 from gameplay_editor.config import load_config
 
 
-def _build_session(gameplay_path, webcam_path, cfg, cache_key, output_dir, force_clasification):
+def _build_session(gameplay_path, webcam_path, cfg, cache_key, output_dir, force_clasification, con_neutro):
     print(f"--- {cache_key} ---")
     gp_info, wc_info, duration = audio_analysis.probe_videos(gameplay_path, webcam_path)
 
@@ -49,7 +53,12 @@ def _build_session(gameplay_path, webcam_path, cfg, cache_key, output_dir, force
     )
     print(f"    {len(classified)} ventanas -> {dict(Counter(w['categoria'] for w in classified))}")
 
-    keep = classification.merge_keep_segments(classified, duration)
+    categorias = ["divertido_interesante"] + (["neutro"] if con_neutro else [])
+    keep = classification.keep_segments_for_categories(
+        classified, duration, categorias,
+        padding_sec=cfg["classification"]["solo_relevante_padding_sec"],
+        proteger_silencio=con_neutro,
+    )
     kept_sec = sum(e - s for s, e in keep)
     print(f"    keep_segments: {len(keep)} tramos, {kept_sec:.1f}s de {duration:.1f}s "
           f"({100 * kept_sec / duration:.1f}%)")
@@ -75,11 +84,14 @@ def _resolve_sessions(args, cfg, output_dir):
         return [
             _build_session(
                 gp, wc, cfg, f"{args.titulo}__{session_folder.sanitize_prefix(prefix)}",
-                output_dir, args.force_clasification,
+                output_dir, args.force_clasification, args.con_neutro,
             )
             for prefix, gp, wc in pairs
         ]
-    return [_build_session(args.gameplay, args.webcam, cfg, args.titulo, output_dir, args.force_clasification)]
+    return [_build_session(
+        args.gameplay, args.webcam, cfg, args.titulo, output_dir,
+        args.force_clasification, args.con_neutro,
+    )]
 
 
 def main():
@@ -96,6 +108,13 @@ def main():
                          help="Ignora el cache de clasificacion y vuelve a llamar a ollama por ventana. "
                               "La transcripcion se sigue invalidando sola por mtime de los videos; para "
                               "forzarla sin eso, borrar el .transcripcion.json a mano.")
+    parser.add_argument("--con-neutro", action="store_true",
+                         help="Por default el corte conserva solo lo clasificado como "
+                              "divertido_interesante (+ dialogo real del juego, siempre). Silencio total "
+                              "(sin transcripcion en ninguna pista) se corta por default. Con este flag, "
+                              "tambien conserva lo clasificado como neutro Y protege el silencio total "
+                              "(para no perder cinematicas silenciosas) -- un corte mas completo/menos "
+                              "agresivo en general.")
     args = parser.parse_args()
 
     if args.folder and (args.gameplay or args.webcam):

@@ -1,2 +1,5 @@
 numpy
 faster-whisper
+fastapi
+uvicorn
+python-multipart
