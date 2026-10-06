@@ -1,0 +1,190 @@
+"""Arma el .kdenlive del timeline del editor: el mismo proyecto que
+project_long.build, pero con los clips que manda el frontend y la metadata
+de los videos leida en el navegador (el backend no tiene los videos).
+Ver SPEC-EXPORT-KDENLIVE.md."""
+import itertools
+import os
+import tempfile
+import time
+import uuid
+import xml.etree.ElementTree as ET
+
+from gameplay_editor import mlt_xml
+from gameplay_editor.config import load_config
+from gameplay_editor.project_long import _pip_rect
+from gameplay_editor.timecode import fps_to_rational, frame_to_tc, seconds_to_frame, seconds_to_tc
+
+
+def chain_metadata_from_info(video):
+    """Las mismas claves meta.media.* que ffmpeg_utils.chain_metadata, con los
+    datos que manda el navegador. Lo que el navegador no da usa los mismos
+    defaults que chain_metadata."""
+    props = {
+        "meta.media.0.stream.type": "video",
+        "meta.media.0.stream.frame_rate": f"{video.fps:g}",
+        "meta.media.0.stream.sample_aspect_ratio": "1",
+        "meta.media.0.codec.width": video.width,
+        "meta.media.0.codec.height": video.height,
+        "meta.media.0.codec.rotate": "0",
+        "meta.media.0.codec.pix_fmt": "yuv420p",
+        "meta.media.0.codec.sample_aspect_ratio": "1",
+        "meta.media.0.codec.colorspace": "709",
+        "meta.media.0.codec.name": "",
+        "meta.media.0.codec.long_name": "",
+    }
+    if video.audio:
+        props.update({
+            "meta.media.1.stream.type": "audio",
+            "meta.media.1.codec.sample_fmt": "fltp",
+            "meta.media.1.codec.sample_rate": video.audio.sampleRate,
+            "meta.media.1.codec.channels": video.audio.channels,
+            "meta.media.1.codec.name": "",
+            "meta.media.1.codec.long_name": "",
+        })
+    props["meta.media.nb_streams"] = "2" if video.audio else "1"
+    props["meta.media.width"] = video.width
+    props["meta.media.height"] = video.height
+    props["meta.media.progressive"] = "1"
+    return props
+
+
+def _webcam_span(start, end, offset_frames, last_frame):
+    """Tramo de webcam del clip [start, end] del gameplay (frames, end
+    inclusive como el out de MLT), recortado a los frames que existen en la
+    webcam. Devuelve (frames de blank antes, (in, out) o None, frames de
+    blank despues), que suman lo mismo que el clip."""
+    webcam_start, webcam_end = start + offset_frames, end + offset_frames
+    visible_start, visible_end = max(webcam_start, 0), min(webcam_end, last_frame)
+    if visible_start > visible_end:
+        return end - start + 1, None, 0
+    return visible_start - webcam_start, (visible_start, visible_end), webcam_end - visible_end
+
+
+def build(request):
+    cfg = load_config()
+    ids = itertools.count(1)
+    bin_ids = itertools.count(1)
+
+    media_by_id = {m.id: m for m in request.media}
+    first = media_by_id[request.clips[0].mediaId].file
+    fps = cfg["project"]["fps"] or first.fps
+    fps_num, fps_den = fps_to_rational(fps)
+    width = cfg["project"]["width"] or first.width
+    height = cfg["project"]["height"] or first.height
+    titulo = os.path.splitext(first.name)[0]
+
+    output_duration = sum(c.out - c.in_ for c in request.clips)
+    out_tc = seconds_to_tc(output_duration, fps)
+
+    canvas_id = "producer0"
+    body = [mlt_xml.color_producer(canvas_id, out_tc)]
+    chain_entries = []
+
+    def add_chain(video):
+        bin_id = next(bin_ids)
+        chain_id = f"chain{bin_id}"
+        length = round(video.duration * fps)
+        len_tc = seconds_to_tc(video.duration, fps)
+        body.append(mlt_xml.chain(
+            chain_id, video.name, len_tc, length, bin_id,
+            meta=chain_metadata_from_info(video),
+        ))
+        chain_entries.append((chain_id, len_tc))
+        return chain_id, bin_id, length
+
+    gameplay_chains, webcam_chains = {}, {}
+    for m in request.media:
+        gameplay_chains[m.id] = add_chain(m.file)
+        if m.webcam:
+            webcam_chains[m.id] = add_chain(m.webcam)
+
+    has_webcam = bool(webcam_chains)
+    gp_has_audio = any(m.file.audio for m in request.media)
+    wc_has_audio = any(m.webcam and m.webcam.audio for m in request.media)
+    opacity = cfg["long"]["webcam_opacity"]
+
+    def blank(frames):
+        return ET.Element("blank", {"length": frame_to_tc(frames, fps)})
+
+    gp_video_entries, wc_video_entries = [], []
+    gp_audio_entries, wc_audio_entries = [], []
+    for clip in request.clips:
+        media = media_by_id[clip.mediaId]
+        start, end = seconds_to_frame(clip.in_, fps), seconds_to_frame(clip.out, fps)
+        in_tc, out_tc_clip = frame_to_tc(start, fps), frame_to_tc(end, fps)
+        clip_frames = end - start + 1
+
+        gp_chain_id, gp_bin_id, _ = gameplay_chains[media.id]
+        gp_video_entries.append(mlt_xml.entry(
+            in_tc, out_tc_clip, gp_chain_id,
+            [mlt_xml.qtblend_filter(f"filter{next(ids)}", mlt_xml.rect_value(0, 0, width, height, 1.0))],
+            bin_id=gp_bin_id,
+        ))
+        gp_audio_entries.append(
+            mlt_xml.entry(in_tc, out_tc_clip, gp_chain_id, bin_id=gp_bin_id)
+            if media.file.audio else blank(clip_frames)
+        )
+
+        if not media.webcam:
+            wc_video_entries.append(blank(clip_frames))
+            wc_audio_entries.append(blank(clip_frames))
+            continue
+
+        wc_chain_id, wc_bin_id, wc_length = webcam_chains[media.id]
+        before, span, after = _webcam_span(start, end, round(media.webcam.offset * fps), wc_length - 1)
+        pip_x, pip_y, pip_w, pip_h = _pip_rect(cfg["long"], width, height, media.webcam.width, media.webcam.height)
+
+        def webcam_items(filters):
+            items = [blank(before)] if before else []
+            if span:
+                items.append(mlt_xml.entry(
+                    frame_to_tc(span[0], fps), frame_to_tc(span[1], fps), wc_chain_id, filters, bin_id=wc_bin_id,
+                ))
+            if after:
+                items.append(blank(after))
+            return items
+
+        wc_video_entries.extend(webcam_items(
+            [mlt_xml.qtblend_filter(f"filter{next(ids)}", mlt_xml.rect_value(pip_x, pip_y, pip_w, pip_h, opacity))],
+        ))
+        wc_audio_entries.extend(webcam_items([]) if media.webcam.audio else [blank(clip_frames)])
+
+    audio_track_ids, video_track_ids = [], []
+
+    def add_track(entries, hide):
+        pl_a = mlt_xml.playlist(f"playlist{next(ids)}", entries)
+        pl_b = mlt_xml.playlist(f"playlist{next(ids)}")
+        tid = f"tractor{next(ids)}"
+        tt = mlt_xml.track_tractor(tid, out_tc, pl_a.get("id"), pl_b.get("id"), hide)
+        body.extend([pl_a, pl_b, tt])
+        return tid
+
+    if gp_has_audio:
+        audio_track_ids.append(add_track(gp_audio_entries, "video"))
+    if wc_has_audio:
+        audio_track_ids.append(add_track(wc_audio_entries, "video"))
+    video_track_ids.append(add_track(gp_video_entries, "audio"))
+    if has_webcam:
+        video_track_ids.append(add_track(wc_video_entries, "audio"))
+
+    sequence_uuid = "{" + str(uuid.uuid4()) + "}"
+    master_id = f"tractor{next(ids)}"
+    master = mlt_xml.master_tractor(
+        master_id, out_tc, canvas_id, audio_track_ids, video_track_ids, sequence_uuid, titulo,
+        next(bin_ids), round(output_duration * fps),
+    )
+    body.append(master)
+
+    document_id = str(int(time.time() * 1000))
+    profile_name = mlt_xml.guess_profile_name(width, height, fps_num, fps_den)
+    body.append(mlt_xml.main_bin_playlist(chain_entries, master_id, sequence_uuid, out_tc, document_id, profile_name))
+    body.append(mlt_xml.project_tractor(f"tractor{next(ids)}", master_id, out_tc))
+
+    profile_el = mlt_xml.profile_element(width, height, fps_num, fps_den, vertical=False)
+    root = mlt_xml.build_document(profile_el, body)
+
+    with tempfile.TemporaryDirectory(prefix="video_editor_") as tmp:
+        path = os.path.join(tmp, "export.kdenlive")
+        mlt_xml.write_document(root, path)
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()

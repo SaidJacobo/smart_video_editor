@@ -5,9 +5,13 @@ proyectos de Kdenlive listos para el ajuste fino manual:
 
 - Transcribe ambas pistas (voz del jugador + diálogo del juego) con Whisper
   local y le pide a un LLM que clasifique el contenido de cada tramo de la
-  sesión en `divertido_interesante`, `relleno` o `neutro`. Los tramos
-  `relleno` se descartan aunque tengan volumen; los tramos sin transcripción
-  posible (sin diálogo de ningún lado) se conservan por default, para no
+  sesión en `divertido_interesante`, `relleno` o `neutro`. Por default se
+  conservan solo los tramos `divertido_interesante` y los que tienen diálogo
+  del juego (estos siempre, sin importar su categoría). De cada uno se toma
+  desde la primera hasta la última frase, con un margen de 8 s, y no la
+  ventana entera. `relleno`, `neutro` y los tramos sin transcripción (sin
+  diálogo de ningún lado) se cortan. Con `--con-neutro` también se conserva
+  lo `neutro` y se protegen enteros los tramos sin transcripción, para no
   perder cinemáticas silenciosas. Ver `spec_clasificacion_contenido.md` para
   el detalle del criterio.
 - Compone el video largo con lo que sobrevive a ese filtro: gameplay a
@@ -23,7 +27,8 @@ Kdenlive para seguir editando.
 
 - Python 3.9+
 - `ffmpeg` / `ffprobe` en el PATH
-- `pip install -r requirements.txt` (`numpy` + `faster-whisper`)
+- `pip install -r requirements.txt` (`numpy` + `faster-whisper`, más
+  `fastapi`, `uvicorn` y `python-multipart` para la API)
 - [ollama](https://ollama.com) corriendo local, con un modelo de texto
   descargado
 - (Opcional, para validar el XML generado sin abrir Kdenlive) `melt`
@@ -35,6 +40,11 @@ sudo pacman -S ollama        # o el instalador que corresponda a tu distro
 ollama serve &                # si no lo tenés corriendo ya como servicio
 ollama pull qwen2.5:7b-instruct
 ```
+
+Corré `ollama serve` y `ollama pull` con tu usuario, no como root: cada
+usuario guarda los modelos en su propio `~/.ollama/models`. Si se levanta
+como root, ollama no encuentra el modelo y cada llamada a `/api/chat`
+devuelve 404. Con `ollama list` se confirma que el modelo está.
 
 Usá un modelo de texto general (`qwen2.5:7b-instruct`, `llama3.1:8b`, etc.),
 no uno de código.
@@ -113,6 +123,43 @@ en ~30s cada una. Para una sesión de ~50 min, calculá ~30-35 min de
 clasificación. Con `--folder`, estos tiempos se suman por cada sesión
 encontrada.
 
+## API para el frontend
+
+`app/` envuelve el mismo análisis en una API FastAPI para el editor web
+(`video_editor_frontend`). En vez de escribir los `.kdenlive`, devuelve los
+tramos a conservar como JSON. El contrato está en `CONTRATO-CORTES.md` del
+frontend y el detalle en `SPEC-fastapi.md`.
+
+```bash
+# una sola vez
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+
+# cada vez (ollama tiene que estar corriendo, ver "Setup de ollama")
+venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+- `--host 0.0.0.0` es necesario porque el frontend corre en Docker y llega al
+  backend por `host.docker.internal` (la red de Docker), no por `127.0.0.1`.
+  Sin ese flag, el proxy de Vite falla con `ECONNREFUSED 172.17.0.1:8000`.
+  Este flag también expone la API a la red local. Para limitarla a Docker,
+  usá `--host 172.17.0.1`.
+- Endpoint: `POST /api/analyze` (`multipart/form-data` con `gameplay`,
+  `webcam` y `webcamOffset`). La request es síncrona: responde cuando termina
+  el análisis (ver "Tiempos esperados"). Probalo primero con una grabación
+  corta.
+- Si ollama no responde o no tiene el modelo, la API devuelve `502` después
+  de 3 reintentos (unos 20 s). El detalle queda en la consola de uvicorn.
+- No usa cache: cada request trabaja en un directorio temporal que se borra
+  al terminar.
+
+Tests (whisper y ollama simulados, necesitan `ffmpeg`):
+
+```bash
+venv/bin/pip install pytest httpx
+venv/bin/python -m pytest tests
+```
+
 ## Config
 
 No hay flag de `--config` — los parámetros se ajustan editando
@@ -124,8 +171,11 @@ No hay flag de `--config` — los parámetros se ajustan editando
 | `transcription.max_word_gap_sec` | segundos | si el hueco entre dos palabras de un mismo segmento de Whisper supera esto, se re-parte en sub-segmentos. Corrige un bug real de Whisper/VAD que a veces agrupa frases separadas por silencios largos (vimos casos de 60-127s) en un solo segmento con el timestamp inflado. |
 | `classification.backend` | `ollama` \| `api` | motor de clasificación. Solo `ollama` está implementado hoy. |
 | `classification.model` | nombre del modelo ollama | usar un modelo de texto general, no uno de código. |
-| `classification.window_sec` / `overlap_sec` | segundos | tamaño de ventana a clasificar y margen de contexto para no cortar una idea al medio. |
+| `classification.window_sec` | segundos | tamaño de ventana a clasificar. Cada ventana usa solo el texto que cae dentro de sus límites. |
+| `classification.context_windows` | número | cuántas ventanas antes y después se le pasan al LLM como contexto. |
 | `classification.categories` | lista | categorías a usar en el prompt; ajustable si no discriminan bien en la práctica. |
+| `classification.solo_relevante_padding_sec` | segundos | margen antes y después de la primera y la última frase de cada tramo conservado. Default: 8. |
+| `classification.timeout_sec` / `retries` / `retry_backoff_sec` | segundos / número / segundos | timeout de cada llamada a ollama, cantidad de intentos y espera entre intentos. El timeout es generoso porque si ollama descargó el modelo de memoria por inactividad, la primera llamada tiene que volver a cargarlo. |
 | `long.webcam_rect_pct` | `x,y,w,h` (0–1, % del canvas) | posición/tamaño del PiP de la webcam en el video largo. Default: arriba a la derecha. |
 | `shorts.webcam_rect_pct` / `shorts.gameplay_rect_pct` | `x,y,w,h` (0–1) | las dos franjas del short: webcam arriba, gameplay abajo. `h: null` en `gameplay_rect_pct` significa "lo que quede hasta el borde". |
 | `shorts.webcam_fit` / `shorts.gameplay_fit` | `cover` \| `contain` | `cover` recorta para llenar el recuadro sin bandas negras (default); `contain` muestra el clip entero, con bandas si no matchea el aspect ratio. |
@@ -163,7 +213,8 @@ detección de varias grabaciones de una misma partida.
 Todavía no implementado: curaduría activa por escenario (Paso 4 del spec —
 hoy el criterio de corte es por ventana de 45s independiente, no por
 situación/escenario agrupado), contexto visual (v3.2), sincronización
-automática de audio/video (asume que gameplay y webcam arrancan en el mismo
-instante) y normalización de loudness — esto último se sigue ajustando a
+automática de audio/video (el CLI asume que gameplay y webcam arrancan en el
+mismo instante; la API recibe el desfase como `webcamOffset`) y
+normalización de loudness — esto último se sigue ajustando a
 mano en Kdenlive. Ver `spec_clasificacion_contenido.md` para el detalle y el
 estado de cada punto.
