@@ -6,6 +6,7 @@ Ver spec_clasificacion_contenido.md, Paso 1.
 """
 import json
 import os
+import time
 
 _MODEL_CACHE = {}
 
@@ -49,8 +50,10 @@ def transcribe_track(path, fuente, cfg):
     y re-parte cada segmento de Whisper en sus huecos internos grandes (ver
     _resegment_by_word_gaps) para evitar que una frase corta quede con un
     rango de tiempo inflado por silencio que en realidad no le pertenece."""
+    started = time.monotonic()
+    print(f"    [whisper] transcribiendo {fuente}...", flush=True)
     model = _load_model(cfg["model"], cfg["compute_type"])
-    segments, _info = model.transcribe(
+    segments, info = model.transcribe(
         path,
         vad_filter=cfg["vad_filter"],
         beam_size=cfg.get("beam_size", 5),
@@ -58,7 +61,14 @@ def transcribe_track(path, fuente, cfg):
     )
     max_gap_sec = cfg.get("max_word_gap_sec", 2.0)
     result = []
+    next_report = 0.1
     for seg in segments:
+        # los segmentos salen a medida que Whisper avanza: se informa cada 10 %
+        progress = seg.end / info.duration if info.duration else 0
+        if progress >= next_report:
+            print(f"    [whisper] {fuente}: {progress:.0%} "
+                  f"({seg.end / 60:.1f} de {info.duration / 60:.1f} min)", flush=True)
+            next_report = progress + 0.1
         for start, end, texto in _resegment_by_word_gaps(seg, max_gap_sec):
             if texto:
                 result.append({
@@ -67,6 +77,7 @@ def transcribe_track(path, fuente, cfg):
                     "texto": texto,
                     "fuente": fuente,
                 })
+    print(f"    [whisper] {fuente}: {len(result)} frases en {time.monotonic() - started:.0f}s", flush=True)
     return result
 
 

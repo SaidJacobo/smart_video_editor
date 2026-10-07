@@ -6,6 +6,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
+from collections import Counter
 
 from gameplay_editor import classification, ffmpeg_utils, project_short, transcription
 from gameplay_editor.config import load_config
@@ -13,6 +15,10 @@ from gameplay_editor.config import load_config
 # clave de cache de transcription/classification; da igual cual sea porque
 # el output_dir es un directorio temporal nuevo en cada request
 _CACHE_KEY = "analisis"
+
+
+def _log(message):
+    print(f"[analyze {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
 class AnalysisError(Exception):
@@ -63,15 +69,22 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
     en segundos del gameplay. Lanza AnalysisError si algun audio no se puede leer o si
     el clasificador no responde."""
     cfg = load_config()
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="video_editor_") as tmp:
         gameplay = _guardar(gameplay_file, os.path.join(tmp, "gameplay"))
         webcam = _guardar(webcam_file, os.path.join(tmp, "webcam"))
         duration = _duracion_audio(gameplay, "No se pudo leer el audio del gameplay.")
-        _duracion_audio(webcam, "No se pudo leer el audio de la webcam.")
+        webcam_duration = _duracion_audio(webcam, "No se pudo leer el audio de la webcam.")
+        _log(f"audios recibidos: gameplay {duration / 60:.1f} min, webcam {webcam_duration / 60:.1f} min, "
+             f"offset {webcam_offset:g}s")
 
+        _log("transcribiendo (Whisper, puede tardar varios minutos)...")
         t = transcription.transcribe(gameplay, webcam, cfg["transcription"], _CACHE_KEY, output_dir=tmp)
         t["jugador"] = correr_offset(t["jugador"], webcam_offset, duration)
+        _log(f"transcripcion lista: jugador {len(t['jugador'])} frases, juego {len(t['juego'])} frases "
+             f"({time.monotonic() - started:.0f}s desde el inicio)")
 
+        _log("clasificando ventanas...")
         try:
             classified = classification.classify(
                 t, cfg["classification"], _CACHE_KEY, output_dir=tmp, duration=duration,
@@ -79,6 +92,8 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
         except RuntimeError as e:
             print(f"    [clasificador] {e}")
             raise AnalysisError(502, "No se pudo conectar con el clasificador.") from e
+
+        _log(f"{len(classified)} ventanas -> {dict(Counter(w['categoria'] for w in classified))}")
 
         keep = classification.keep_segments_for_categories(
             classified, duration, ["divertido_interesante"],
@@ -89,6 +104,9 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
             classification.classification_highlights(classified), duration,
             s["pre_roll_sec"], s["post_roll_sec"], s["merge_gap_sec"],
         )
+    kept_sec = sum(e - s for s, e in keep)
+    _log(f"listo en {time.monotonic() - started:.0f}s: {len(keep)} tramos ({kept_sec / 60:.1f} de "
+         f"{duration / 60:.1f} min), {len(windows)} shorts")
     return {
         "duration": duration,
         "segments": [{"start": a, "end": b} for a, b in keep],

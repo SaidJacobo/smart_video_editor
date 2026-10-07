@@ -394,8 +394,10 @@ def classify(transcripcion, cfg, titulo, output_dir=None, force=False, duration=
         os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
         pendientes = windows[len(classified):]
         for i, window in enumerate(pendientes, start=len(classified) + 1):
-            print(f"    ventana {i}/{len(windows)}...", end="\r")
             result = classify_window(window, cfg)
+            if window["texto"] is not None:
+                print(f"    ventana {i}/{len(windows)} [{window['inicio']:.1f}-{window['fin']:.1f}s] "
+                      f"-> {result['categoria']} ({result.get('razon', '')})", flush=True)
             classified.append({
                 "inicio": window["inicio"],
                 "fin": window["fin"],
@@ -405,7 +407,6 @@ def classify(transcripcion, cfg, titulo, output_dir=None, force=False, duration=
             })
             with open(cache_file, "w", encoding="utf-8") as fh:
                 json.dump({"signature": sig, "windows": classified}, fh, indent=2, ensure_ascii=False)
-        print()
 
     # evidencia y tiene_dialogo_juego se derivan de la transcripcion
     # (build_windows), no del LLM -- se recalculan siempre, sin costo, asi
