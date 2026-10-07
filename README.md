@@ -120,8 +120,8 @@ es prácticamente gratis la segunda vez, salvo que:
 
 Con modelo `medium` (CPU, sin GPU dedicada): transcripción ronda 15-17x
 tiempo real (medido: ~6 min para una sesión de 52 min). El cuello de botella
-real es la clasificación — una llamada a ollama por ventana de 45s, medida
-en ~30s cada una. Para una sesión de ~50 min, calculá ~30-35 min de
+real es la clasificación — una llamada al clasificador por cada tramo de
+habla (ventanas de hasta 90s), medida con ollama en ~30s cada una. Para una sesión de ~50 min, calculá ~30-35 min de
 clasificación. Con `--folder`, estos tiempos se suman por cada sesión
 encontrada.
 
@@ -173,7 +173,8 @@ No hay flag de `--config` — los parámetros se ajustan editando
 | `transcription.max_word_gap_sec` | segundos | si el hueco entre dos palabras de un mismo segmento de Whisper supera esto, se re-parte en sub-segmentos. Corrige un bug real de Whisper/VAD que a veces agrupa frases separadas por silencios largos (vimos casos de 60-127s) en un solo segmento con el timestamp inflado. |
 | `classification.backend` | `ollama` \| `api` | motor de clasificación. Solo `ollama` está implementado hoy. |
 | `classification.model` | nombre del modelo ollama | usar un modelo de texto general, no uno de código. |
-| `classification.window_sec` | segundos | tamaño de ventana a clasificar. Cada ventana usa solo el texto que cae dentro de sus límites. |
+| `classification.silencio_corte_sec` | segundos | cada ventana a clasificar es un tramo de habla, de la primera a la última frase; se corta cuando hay esto sin diálogo en las dos pistas (jugador y juego). Lo que queda entre ventanas no se clasifica. Default: 10. Si quedan muchas ventanas de una frase suelta, subirlo; si los tramos conservados tienen mucho aire, bajarlo. |
+| `classification.max_ventana_sec` | segundos | un tramo de habla más largo que esto se parte en su pausa más larga. Default: 90. |
 | `classification.context_windows` | número | cuántas ventanas antes y después se le pasan al LLM como contexto. |
 | `classification.categories` | lista | categorías a usar en el prompt; ajustable si no discriminan bien en la práctica. |
 | `classification.solo_relevante_padding_sec` | segundos | margen antes y después de la primera y la última frase de cada tramo conservado. Default: 8. |
@@ -213,7 +214,7 @@ composición PiP del video largo, generación de shorts, cache en dos capas,
 detección de varias grabaciones de una misma partida.
 
 Todavía no implementado: curaduría activa por escenario (Paso 4 del spec —
-hoy el criterio de corte es por ventana de 45s independiente, no por
+hoy el criterio de corte es por tramo de habla independiente, no por
 situación/escenario agrupado), contexto visual (v3.2), sincronización
 automática de audio/video (el CLI asume que gameplay y webcam arrancan en el
 mismo instante; la API recibe el desfase como `webcamOffset`) y

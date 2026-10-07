@@ -46,7 +46,11 @@ DEFAULT_CONFIG = {
     "classification": {
         "backend": "jev",  # "jev" | "ollama"
         "model": "jev-latest",
-        "window_sec": 45.0,
+        # una ventana a clasificar es un tramo de habla: se corta cuando hay
+        # esto sin dialogo en las dos pistas, y si dura mas de max_ventana_sec
+        # se parte en su pausa mas larga (ver classification.build_windows)
+        "silencio_corte_sec": 10.0,
+        "max_ventana_sec": 90.0,
         "context_windows": 2,
         "categories": ["divertido_interesante", "relleno", "neutro"],
         # margen +/- alrededor de la evidencia real al recortar un corte

@@ -60,6 +60,7 @@ def _ventana(contexto_antes="", contexto_despues=""):
     return {
         "inicio": 45.0, "fin": 90.0, "texto": "[jugador] jaja que paso", "duracion_hablada": 12.3,
         "contexto_antes": contexto_antes, "contexto_despues": contexto_despues,
+        "silencio_antes": 30.0, "silencio_despues": 12.5,
     }
 
 
@@ -77,6 +78,8 @@ def test_manda_el_request_de_la_spec(jev, cfg):
     assert body["state"] == {
         "duracion_tramo_seg": 45.0,
         "habla_real_seg": 12.3,
+        "silencio_antes_seg": 30.0,
+        "silencio_despues_seg": 12.5,
         "contexto_antes": "[juego] antes",
         "tramo_a_clasificar": "[jugador] jaja que paso",
         "contexto_despues": "[jugador] despues",
@@ -84,13 +87,17 @@ def test_manda_el_request_de_la_spec(jev, cfg):
     pregunta = body["questions"]["categoria"]
     assert pregunta["type"] == "choice"
     assert pregunta["criteria"] == classification._CATEGORY_DESCRIPTIONS
+    assert pregunta["instructions"].endswith(
+        "Tene en cuenta `silencio_antes_seg` y `silencio_despues_seg`: una frase corta con mucho "
+        "silencio antes y despues no es lo mismo que la misma frase en medio de una charla."
+    )
 
 
 def test_omite_contextos_vacios(jev, cfg):
     jev["respuestas"] = [RESPUESTA_OK]
     classification.classify_window(_ventana(), cfg)
     assert set(json.loads(jev["requests"][0].data)["state"]) == {
-        "duracion_tramo_seg", "habla_real_seg", "tramo_a_clasificar",
+        "duracion_tramo_seg", "habla_real_seg", "silencio_antes_seg", "silencio_despues_seg", "tramo_a_clasificar",
     }
 
 
@@ -129,3 +136,8 @@ def test_sin_api_key(jev, cfg, monkeypatch):
     with pytest.raises(RuntimeError, match="Falta JEV_API_KEY en el .env del backend"):
         classification.classify_window(_ventana(), cfg)
     assert jev["requests"] == []
+
+
+def test_prompt_de_ollama_con_el_silencio_alrededor():
+    prompt = classification._build_prompt(_ventana(), ["relleno"])
+    assert "Antes de este tramo hubo 30s sin dialogo y despues 12s." in prompt

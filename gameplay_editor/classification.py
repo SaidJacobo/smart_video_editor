@@ -1,10 +1,10 @@
 """Clasificacion de contenido por ventanas de transcripcion, via LLM local
 (ollama) o API. Ver spec_clasificacion_contenido.md, Paso 2.
 
-Flujo: build_windows() arma ventanas no solapadas de cfg["window_sec"], cada
-una con su propio texto (jugador + juego, estrictamente dentro de sus
-propios limites de tiempo -- ver nota en build_windows sobre por que no se
-extiende con margen) mas el texto de las ventanas de contexto antes/despues.
+Flujo: build_windows() arma una ventana por tramo de habla (cortando en los
+silencios de cfg["silencio_corte_sec"] en las dos pistas), cada una con su
+propio texto (jugador + juego) mas el texto de las ventanas de contexto
+antes/despues.
 classify() le pega a un LLM por ventana y devuelve la categoria; las
 ventanas sin transcripcion no llaman al LLM (quedan como "sin_transcripcion",
 que Paso 3 trata como "mantener por defecto").
@@ -18,7 +18,7 @@ import urllib.request
 
 from .audio_analysis import drop_short_segments, merge_intervals
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 SIN_TRANSCRIPCION = "sin_transcripcion"
 
@@ -50,101 +50,128 @@ def _merge_sorted(jugador, juego):
     return sorted(jugador + juego, key=lambda s: s["inicio"])
 
 
-def _window_bounds(duration, window_sec):
-    bounds = []
-    t = 0.0
-    while t < duration:
-        bounds.append((t, min(t + window_sec, duration)))
-        t += window_sec
-    return bounds
-
-
-def _segments_in_range(segments, start, end):
-    return [s for s in segments if s["inicio"] < end and s["fin"] > start]
-
-
 def _format_segments(segments):
     return "\n".join(f"[{s['fuente']}] {s['texto']}" for s in segments)
 
 
+def _group_fin(group):
+    return max(s["fin"] for s in group)
+
+
+def _group_by_silence(segments, silencio_sec):
+    """Agrupa segmentos (ordenados por inicio) en tramos de habla: un tramo
+    se cierra cuando el siguiente segmento empieza silencio_sec o mas despues
+    del fin maximo del tramo, en cualquiera de las dos pistas."""
+    groups = []
+    fin_max = None
+    for s in segments:
+        if groups and s["inicio"] - fin_max < silencio_sec:
+            groups[-1].append(s)
+            fin_max = max(fin_max, s["fin"])
+        else:
+            groups.append([s])
+            fin_max = s["fin"]
+    return groups
+
+
+def _split_long(group, max_sec):
+    """Parte un tramo que dura mas de max_sec en su pausa mas larga, hasta que
+    cada parte entre. Un segmento solo queda como esta aunque sea mas largo."""
+    if len(group) == 1 or _group_fin(group) - group[0]["inicio"] <= max_sec:
+        return [group]
+    fin_max = group[0]["fin"]
+    best_gap, best_i = None, None
+    for i in range(1, len(group)):
+        gap = group[i]["inicio"] - fin_max
+        if best_gap is None or gap > best_gap:
+            best_gap, best_i = gap, i
+        fin_max = max(fin_max, group[i]["fin"])
+    return _split_long(group[:best_i], max_sec) + _split_long(group[best_i:], max_sec)
+
+
+def _sin_texto(inicio, fin):
+    return {
+        "inicio": round(inicio, 2),
+        "fin": round(fin, 2),
+        "texto": None,
+        "evidencia": None,
+        "tiene_dialogo_juego": False,
+        "duracion_hablada": 0.0,
+        "contexto_antes": "",
+        "contexto_despues": "",
+        "silencio_antes": 0.0,
+        "silencio_despues": 0.0,
+    }
+
+
 def build_windows(transcripcion, cfg, duration=None):
-    """Devuelve una lista de ventanas: {inicio, fin, texto, evidencia,
-    tiene_dialogo_juego, contexto_antes, contexto_despues}. `texto` es None
-    si la ventana no tiene transcripcion (ni jugador ni juego dijeron nada
-    ahi, en su rango propio).
+    """Devuelve una lista de ventanas ordenadas por inicio: {inicio, fin,
+    texto, evidencia, tiene_dialogo_juego, duracion_hablada, contexto_antes,
+    contexto_despues, silencio_antes, silencio_despues}.
 
-    El texto de cada ventana usa SOLO segmentos que caen dentro de sus
-    propios limites [inicio, fin) -- nunca se extiende con margen. Version
-    anterior extendia con un `overlap_sec` de contexto para "no cortar una
-    idea a la mitad", pero eso permitia que una frase de una ventana vecina
-    (que puede caer minutos antes/despues, ver evidencia real medida en
-    sesiones de prueba) contaminara la clasificacion de una ventana que en
-    realidad es puro silencio. El contexto de ventanas vecinas ya se cubre
-    con contexto_antes/contexto_despues (texto COMPLETO de esas ventanas,
-    no un recorte arbitrario de segundos), que es señal mas util de todos
-    modos.
+    Cada ventana con texto es un tramo de habla: empieza en su primera frase
+    y termina en la ultima, y se corta cuando hay cfg["silencio_corte_sec"]
+    sin dialogo en las dos pistas a la vez. Un tramo de mas de
+    cfg["max_ventana_sec"] se parte en su pausa mas larga. Cada segmento cae
+    en exactamente una ventana. El contexto son las cfg["context_windows"]
+    ventanas con texto mas cercanas antes/despues, y silencio_antes/despues
+    los segundos sin dialogo hasta la ventana con texto vecina (o el borde
+    del video): con ventanas que arrancan y terminan en el habla, es lo que
+    distingue una frase suelta de una charla.
 
-    `duration` deberia ser la duracion real del video (de audio_analysis),
-    no solo hasta el ultimo segmento transcripto: un tramo final sin dialogo
-    tambien tiene que quedar cubierto por una ventana "sin_transcripcion"
-    para que Paso 3 lo mantenga por defecto en vez de ignorarlo."""
+    Los huecos entre ventanas con texto (y desde 0 / hasta `duration`) son
+    ventanas con texto None (quedan "sin_transcripcion", no se clasifican).
+    `duration` deberia ser la duracion real del video, para que el tramo
+    final sin dialogo tambien quede cubierto."""
     all_segments = _merge_sorted(transcripcion["jugador"], transcripcion["juego"])
     if duration is None:
         if not all_segments:
             return []
         duration = max(s["fin"] for s in all_segments)
-    window_sec = cfg["window_sec"]
     context_n = cfg["context_windows"]
 
-    bounds = _window_bounds(duration, window_sec)
-    per_window_text = []
-    per_window_evidencia = []
-    per_window_juego = []
-    per_window_hablado = []
-    for start, end in bounds:
-        own = _segments_in_range(all_segments, start, end)
-        if own:
-            per_window_text.append(_format_segments(own))
-            per_window_evidencia.append((
-                min(s["inicio"] for s in own),
-                max(s["fin"] for s in own),
-            ))
-        else:
-            per_window_text.append(None)
-            per_window_evidencia.append(None)
-        per_window_juego.append(any(s["fuente"] == "juego" for s in own))
-        per_window_hablado.append(sum(min(s["fin"], end) - max(s["inicio"], start) for s in own))
+    groups = [
+        part
+        for group in _group_by_silence(all_segments, cfg["silencio_corte_sec"])
+        for part in _split_long(group, cfg["max_ventana_sec"])
+    ]
+    texts = [_format_segments(g) for g in groups]
+    bounds = [(g[0]["inicio"], _group_fin(g)) for g in groups]
 
     windows = []
-    for i, (start, end) in enumerate(bounds):
-        ctx_before = [t for t in per_window_text[max(0, i - context_n):i] if t]
-        ctx_after = [t for t in per_window_text[i + 1:i + 1 + context_n] if t]
+    cursor = 0.0
+    for i, (group, (start, end)) in enumerate(zip(groups, bounds)):
+        if start > cursor:
+            windows.append(_sin_texto(cursor, start))
+        anterior_fin = bounds[i - 1][1] if i > 0 else 0.0
+        siguiente_inicio = bounds[i + 1][0] if i + 1 < len(bounds) else duration
         windows.append({
             "inicio": round(start, 2),
             "fin": round(end, 2),
-            "texto": per_window_text[i],
-            "evidencia": per_window_evidencia[i],
-            "tiene_dialogo_juego": per_window_juego[i],
-            "duracion_hablada": round(per_window_hablado[i], 1),
-            "contexto_antes": "\n---\n".join(ctx_before),
-            "contexto_despues": "\n---\n".join(ctx_after),
+            "texto": texts[i],
+            "evidencia": (start, end),
+            "tiene_dialogo_juego": any(s["fuente"] == "juego" for s in group),
+            "duracion_hablada": round(sum(s["fin"] - s["inicio"] for s in group), 1),
+            "contexto_antes": "\n---\n".join(texts[max(0, i - context_n):i]),
+            "contexto_despues": "\n---\n".join(texts[i + 1:i + 1 + context_n]),
+            "silencio_antes": round(max(0.0, start - anterior_fin), 1),
+            "silencio_despues": round(max(0.0, siguiente_inicio - end), 1),
         })
+        cursor = max(cursor, end)
+    if duration > cursor:
+        windows.append(_sin_texto(cursor, duration))
     return windows
 
 
 def _build_prompt(window, categories):
     cat_lines = "\n".join(f"- {c}: {_CATEGORY_DESCRIPTIONS.get(c, '')}" for c in categories)
-    duracion = window["fin"] - window["inicio"]
-    hablado = window.get("duracion_hablada", 0.0)
-    pct = round(100 * hablado / duracion) if duracion else 0
     parts = [
         "Sos un editor de video clasificando un tramo de una sesion de gameplay grabada.",
         "Las lineas [jugador] son lo que dice quien juega (voz de webcam); "
         "las lineas [juego] son dialogo/audio del propio videojuego (cinematicas, NPCs).",
-        f"Este tramo dura {duracion:.0f}s; de eso hay {hablado:.1f}s de habla real (~{pct}%), "
-        "el resto es silencio o solo ambiente/musica del juego. Tenelo en cuenta: una frase "
-        "corta perdida en un tramo mayormente silencioso no es lo mismo que la misma frase "
-        "en un tramo donde se habla todo el tiempo.",
+        f"Antes de este tramo hubo {window['silencio_antes']:.0f}s sin dialogo y despues "
+        f"{window['silencio_despues']:.0f}s. Tenelo en cuenta: una frase corta con mucho silencio "
+        "antes y despues no es lo mismo que la misma frase en medio de una charla.",
         "",
         "Categorias posibles:",
         cat_lines,
@@ -220,9 +247,9 @@ _JEV_INSTRUCTIONS = (
     "Las lineas [jugador] son lo que dice quien juega (voz de webcam); las lineas [juego] "
     "son dialogo/audio del propio videojuego (cinematicas, NPCs). Clasifica solo "
     "`tramo_a_clasificar`; los contextos son los tramos vecinos y NO son lo que hay que "
-    "clasificar. Tene en cuenta `habla_real_seg` frente a `duracion_tramo_seg`: una frase "
-    "corta perdida en un tramo mayormente silencioso no es lo mismo que la misma frase en "
-    "un tramo donde se habla todo el tiempo."
+    "clasificar. Tene en cuenta `silencio_antes_seg` y `silencio_despues_seg`: una frase "
+    "corta con mucho silencio antes y despues no es lo mismo que la misma frase en medio "
+    "de una charla."
 )
 
 
@@ -230,6 +257,8 @@ def _jev_state(window):
     state = {
         "duracion_tramo_seg": round(window["fin"] - window["inicio"], 1),
         "habla_real_seg": window.get("duracion_hablada", 0.0),
+        "silencio_antes_seg": window["silencio_antes"],
+        "silencio_despues_seg": window["silencio_despues"],
     }
     if window["contexto_antes"]:
         state["contexto_antes"] = window["contexto_antes"]

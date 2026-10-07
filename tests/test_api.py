@@ -133,14 +133,14 @@ def test_shorts_alrededor_de_cada_momento(client, audio, fake_whisper, fake_clas
 def test_shorts_cercanos_se_fusionan(client, audio, fake_whisper, fake_clasificador):
     fake_whisper["jugador"] = [
         _seg(40.0, 41.0, "jaja", "jugador"),
-        _seg(50.0, 51.0, "jaja", "jugador"),
+        _seg(55.0, 56.0, "jaja", "jugador"),
     ]
 
     body = _post(client, audio, audio).json()
 
     _cumple_contrato(body)
     assert len(fake_clasificador) == 2
-    assert body["shorts"] == [{"start": 22.5, "end": 68.5}]
+    assert body["shorts"] == [{"start": 22.5, "end": 73.5}]
 
 
 def test_sin_momentos_no_hay_shorts(client, audio, fake_whisper, fake_clasificador):
@@ -160,7 +160,7 @@ def test_offset_mueve_la_webcam_al_tiempo_del_gameplay(client, audio, fake_whisp
 
     assert response.status_code == 200
     [ventana] = fake_clasificador
-    assert (ventana["inicio"], ventana["fin"]) == (45.0, 90.0)
+    assert (ventana["inicio"], ventana["fin"]) == (70.0, 75.0)
     assert response.json()["segments"] == [{"start": 62.0, "end": 83.0}]
     assert response.json()["shorts"] == [{"start": 54.5, "end": 90.5}]
 
