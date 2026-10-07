@@ -18,9 +18,23 @@ import urllib.request
 
 from .audio_analysis import drop_short_segments, merge_intervals
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 SIN_TRANSCRIPCION = "sin_transcripcion"
+
+# Rol y criterio del editor, compartido por ollama y JEV.
+_EDITOR_PROMPT = (
+    "Sos editor de videos largos de gameplays de terror. Recibís la transcripción de una "
+    "ventana con dos pistas: jugador (lo que dice el streamer, argentino) y juego (diálogos "
+    "del juego). Elegí lo más gracioso y entretenido: cuando pierde y se enoja, cuando se "
+    "asusta o grita por un jumpscare, cuando se ríe de algo, cuando hace chistes sarcásticos "
+    'o le "contesta" al juego. Las puteadas suelen indicar que se está divirtiendo o la está '
+    "pasando mal, y las dos cosas son buen contenido. Interpretá las expresiones argentinas "
+    "por su sentido. La transcripción puede tener errores, sobre todo en gritos y lunfardo, "
+    "así que priorizá la intención. Es relleno: explorar o caminar sin comentarios, menús, "
+    "cargar partida, leer notas o carteles, explicar controles o hablar de temas técnicos "
+    "sin gracia."
+)
 
 _CATEGORY_DESCRIPTIONS = {
     "divertido_interesante": (
@@ -166,9 +180,7 @@ def build_windows(transcripcion, cfg, duration=None):
 def _build_prompt(window, categories):
     cat_lines = "\n".join(f"- {c}: {_CATEGORY_DESCRIPTIONS.get(c, '')}" for c in categories)
     parts = [
-        "Sos un editor de video clasificando un tramo de una sesion de gameplay grabada.",
-        "Las lineas [jugador] son lo que dice quien juega (voz de webcam); "
-        "las lineas [juego] son dialogo/audio del propio videojuego (cinematicas, NPCs).",
+        _EDITOR_PROMPT,
         f"Antes de este tramo hubo {window['silencio_antes']:.0f}s sin dialogo y despues "
         f"{window['silencio_despues']:.0f}s. Tenelo en cuenta: una frase corta con mucho silencio "
         "antes y despues no es lo mismo que la misma frase en medio de una charla.",
@@ -243,11 +255,9 @@ def _classify_ollama(window, categories, cfg):
 _JEV_URL = "https://api.typesafe.ai/v1/systemone"
 
 _JEV_INSTRUCTIONS = (
-    "Sos un editor de video clasificando un tramo de una sesion de gameplay grabada. "
-    "Las lineas [jugador] son lo que dice quien juega (voz de webcam); las lineas [juego] "
-    "son dialogo/audio del propio videojuego (cinematicas, NPCs). Clasifica solo "
-    "`tramo_a_clasificar`; los contextos son los tramos vecinos y NO son lo que hay que "
-    "clasificar. Tene en cuenta `silencio_antes_seg` y `silencio_despues_seg`: una frase "
+    _EDITOR_PROMPT
+    + " Clasifica solo `tramo_a_clasificar`; los contextos son los tramos vecinos y NO son "
+    "lo que hay que clasificar. Tene en cuenta `silencio_antes_seg` y `silencio_despues_seg`: una frase "
     "corta con mucho silencio antes y despues no es lo mismo que la misma frase en medio "
     "de una charla."
 )

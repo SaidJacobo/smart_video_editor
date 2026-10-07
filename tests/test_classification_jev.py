@@ -87,6 +87,7 @@ def test_manda_el_request_de_la_spec(jev, cfg):
     pregunta = body["questions"]["categoria"]
     assert pregunta["type"] == "choice"
     assert pregunta["criteria"] == classification._CATEGORY_DESCRIPTIONS
+    assert pregunta["instructions"].startswith(classification._EDITOR_PROMPT)
     assert pregunta["instructions"].endswith(
         "Tene en cuenta `silencio_antes_seg` y `silencio_despues_seg`: una frase corta con mucho "
         "silencio antes y despues no es lo mismo que la misma frase en medio de una charla."
@@ -140,4 +141,5 @@ def test_sin_api_key(jev, cfg, monkeypatch):
 
 def test_prompt_de_ollama_con_el_silencio_alrededor():
     prompt = classification._build_prompt(_ventana(), ["relleno"])
+    assert prompt.startswith(classification._EDITOR_PROMPT)
     assert "Antes de este tramo hubo 30s sin dialogo y despues 12s." in prompt

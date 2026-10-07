@@ -160,7 +160,7 @@ def test_no_reusa_cache_de_ventanas_fijas(cfg, monkeypatch, tmp_path):
     with open(path, encoding="utf-8") as fh:
         cache = fh.read()
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(cache.replace('"prompt_version": "v2"', '"prompt_version": "v1"'))
+        fh.write(cache.replace('"prompt_version": "v3"', '"prompt_version": "v1"'))
 
     classification.classify(transcripcion, cfg, "t", output_dir=str(tmp_path), duration=60.0)
 
