@@ -19,8 +19,8 @@ en un solo proyecto, por el prefijo del nombre de archivo):
 Requiere ollama corriendo (`ollama serve`) con el modelo de
 cfg["classification"]["model"] ya descargado (`ollama pull <modelo>`).
 
-Genera siempre <titulo>_long.kdenlive y <titulo>_shorts.kdenlive en
---output-dir. Si alguno ya existe, el script no lo pisa: hay que borrarlo a
+Genera <titulo>_long.kdenlive y <titulo>_shorts.kdenlive (este ultimo solo si
+hay algun momento para shorts) en --output-dir. Si alguno ya existe, el script no lo pisa: hay que borrarlo a
 mano antes de correr de nuevo.
 
 Ver spec_clasificacion_contenido.md para el detalle del criterio de
@@ -148,7 +148,10 @@ def main():
         out_shorts = project_short.build_all(s["gameplay"], s["webcam"], cfg, s["analysis"], args.titulo, output_dir)
 
     print("Proyecto largo generado:", out_long)
-    print("Proyecto de shorts generado:", out_shorts)
+    if out_shorts:
+        print("Proyecto de shorts generado:", out_shorts)
+    else:
+        print("No se encontraron momentos para shorts.")
 
 
 if __name__ == "__main__":

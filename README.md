@@ -64,7 +64,9 @@ python3 editor.py \
 
 Esto genera siempre **dos archivos**: `mi_sesion_long.kdenlive` (el video
 completo con los cortes ya aplicados) y `mi_sesion_shorts.kdenlive` (una
-secuencia por cada momento `divertido_interesante` detectado).
+sola secuencia con todos los shorts seguidos, con una guide al inicio de cada uno).
+Si no hay ningún momento `divertido_interesante`, no se genera el de shorts y
+se avisa.
 
 Si alguno de los dos ya existe en `--output-dir`, el script **no lo pisa**:
 avisa cuál existe y termina sin procesar nada. Para regenerar, borrá el

@@ -140,6 +140,10 @@ def entry(in_tc, out_tc, producer_id, filters=None, bin_id=None):
     return e
 
 
+def blank(length_tc):
+    return ET.Element("blank", {"length": length_tc})
+
+
 def playlist(id_, entries=None):
     p = ET.Element("playlist", {"id": id_})
     for e in entries or []:
@@ -310,17 +314,6 @@ def main_bin_playlist(chain_entries, sequence_tractor_id, sequence_uuid, sequenc
     for chain_id, out_tc in chain_entries:
         pl.append(ET.Element("entry", {"in": "00:00:00.000", "out": out_tc, "producer": chain_id}))
     pl.append(ET.Element("entry", {"in": "00:00:00.000", "out": sequence_out_tc, "producer": sequence_tractor_id}))
-    return pl
-
-
-def main_bin_playlist_multi(chain_entries, sequences, active_uuid, opensequences, document_id, profile_name):
-    """Como main_bin_playlist pero con varias secuencias (una entry por
-    tractor de secuencia, todas listadas en docproperties.opensequences)."""
-    pl = _main_bin_base(active_uuid, opensequences, document_id, profile_name)
-    for chain_id, out_tc in chain_entries:
-        pl.append(ET.Element("entry", {"in": "00:00:00.000", "out": out_tc, "producer": chain_id}))
-    for master_id, _sequence_uuid, out_tc in sequences:
-        pl.append(ET.Element("entry", {"in": "00:00:00.000", "out": out_tc, "producer": master_id}))
     return pl
 
 
