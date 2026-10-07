@@ -1,13 +1,15 @@
 """Tests de POST /api/export/kdenlive. Para comparar contra project_long.build
 se generan videos reales con ffmpeg (project_long los lee con ffprobe)."""
+import json
 import subprocess
 import xml.etree.ElementTree as ET
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app import export_kdenlive
 from app.main import app as fastapi_app
-from gameplay_editor import ffmpeg_utils, project_long
+from gameplay_editor import ffmpeg_utils, project_long, project_short
 from gameplay_editor.config import load_config
 
 FPS = 30
@@ -34,13 +36,23 @@ def _clip(start, end, media_id="m1"):
     return {"mediaId": media_id, "in": start, "out": end}
 
 
-def _post(client, media, clips):
-    return client.post("/api/export/kdenlive", json={"media": media, "clips": clips})
+def _post(client, media, clips, layout="long"):
+    return client.post("/api/export/kdenlive", json={"media": media, "clips": clips, "layout": layout})
 
 
 def _prop(el, name):
     found = el.find(f"property[@name='{name}']")
     return None if found is None else found.text
+
+
+def _master(xml):
+    root = ET.fromstring(xml)
+    return next(el for el in root if el.tag == "tractor" and _prop(el, "kdenlive:uuid"))
+
+
+def _guides(xml):
+    guides = _prop(_master(xml), "kdenlive:sequenceproperties.guides")
+    return None if guides is None else [(g["pos"], g["comment"]) for g in json.loads(guides)]
 
 
 def _pistas(xml):
@@ -136,7 +148,50 @@ def test_sin_audio_no_hay_pista_de_audio(client):
     assert [es_audio for es_audio, _ in pistas] == [True, False, False]
 
 
+def test_largo_sin_guides(client):
+    assert _guides(_post(client, [_media()], [_clip(0.0, 5.0)]).text) is None
+
+
+def test_shorts_vertical_con_una_guide_por_clip(client):
+    # [10, 20.5] son los frames 300..615 (316 frames) y [40, 50] 1200..1500 (301)
+    xml = _post(client, [_media()], [_clip(10.0, 20.5), _clip(40.0, 50.0)], layout="shorts").text
+
+    profile = ET.fromstring(xml).find("profile")
+    assert (profile.get("width"), profile.get("height")) == ("1080", "1920")
+    assert (profile.get("display_aspect_num"), profile.get("display_aspect_den")) == ("9", "16")
+    master = _master(xml)
+    assert _prop(master, "kdenlive:clipname") == "m1-gameplay_shorts"
+    assert _prop(master, "kdenlive:maxduration") == "617"
+    assert _guides(xml) == [(0, "Short 01"), (316, "Short 02")]
+
+
+def test_shorts_rects_con_las_medidas_de_cada_video(client):
+    media = [_media("m1"), {**_media("m2"), "file": _video("m2-gameplay.mp4", width=1280, height=720)}]
+    a1, a2, v1, v2 = _pistas(_post(client, media, [_clip(0.0, 5.0), _clip(0.0, 5.0, "m2")], layout="shorts").text)
+
+    cfg = load_config()["shorts"]
+    for i, (gp_w, gp_h) in enumerate([(1920, 1080), (1280, 720)]):
+        gp_rect, wc_rect, _ = project_short.short_rects(cfg, 1080, 1920, gp_w, gp_h, 640, 360)
+        assert v1[1][i][4] == "00:00:00.000=" + " ".join(f"{v:g}" for v in gp_rect) + " 1"
+        assert v2[1][i][4] == "00:00:00.000=" + " ".join(f"{v:g}" for v in wc_rect) + " 1"
+
+
+def test_shorts_con_blur_agrega_pista_debajo_del_gameplay(client, monkeypatch):
+    cfg = load_config()
+    cfg["shorts"]["background_blur"]["enabled"] = True
+    monkeypatch.setattr(export_kdenlive, "load_config", lambda: cfg)
+
+    pistas = _pistas(_post(client, [_media()], [_clip(0.0, 5.0)], layout="shorts").text)
+
+    assert [es_audio for es_audio, _ in pistas] == [True, True, False, False, False]
+    blur, gameplay = pistas[2][1][0], pistas[3][1][0]
+    assert blur[1:4] == gameplay[1:4]
+    assert blur[4] != gameplay[4]
+
+
 @pytest.mark.parametrize("body", [
+    {"media": [_media()], "clips": [_clip(0.0, 2.0)], "layout": "cuadrado"},
+    {"media": [_media()], "clips": [_clip(0.0, 2.0)]},
     {"media": [_media()], "clips": []},
     {"media": [_media()]},
     {"media": [_media()], "clips": [_clip(0.0, 2.0, "otro")]},
@@ -189,3 +244,32 @@ def test_equivalente_a_project_long(client, videos, tmp_path):
         long_xml = fh.read()
     assert _sin_resource(_pistas(response.text)) == _sin_resource(_pistas(long_xml))
     assert ET.fromstring(response.text).find("profile").attrib == ET.fromstring(long_xml).find("profile").attrib
+
+
+def test_shorts_equivalente_a_project_short(client, videos, tmp_path):
+    gp_info = ffmpeg_utils.video_info(str(videos["gameplay.mp4"]))
+    wc_info = ffmpeg_utils.video_info(str(videos["webcam.mp4"]))
+    analysis = {
+        "duration": gp_info["duration"], "gameplay_info": gp_info, "webcam_info": wc_info, "keep_segments": [],
+        "highlights": [{"time": t, "score": 1.0} for t in (3.0, 10.1, 16.0)],
+    }
+    cfg = load_config()
+    cfg["shorts"].update({"pre_roll_sec": 2.0, "post_roll_sec": 2.0, "merge_gap_sec": 1.0})
+    shorts_path = project_short.build_all(
+        str(videos["gameplay.mp4"]), str(videos["webcam.mp4"]), cfg, analysis, "gameplay", str(tmp_path),
+    )
+
+    def file(name, info):
+        return {"name": name, "duration": info["duration"], "width": info["width"], "height": info["height"],
+                "fps": info["fps"], "audio": AUDIO}
+
+    media = [{"id": "m1", "file": file("gameplay.mp4", gp_info), "webcam": {**file("webcam.mp4", wc_info), "offset": 0}}]
+    clips = [_clip(s, e) for s, e in [(1.0, 5.0), (8.1, 12.1), (14.0, 18.0)]]
+    response = _post(client, media, clips, layout="shorts")
+
+    with open(shorts_path, encoding="utf-8") as fh:
+        shorts_xml = fh.read()
+    assert _sin_resource(_pistas(response.text)) == _sin_resource(_pistas(shorts_xml))
+    assert _guides(response.text) == _guides(shorts_xml) == [(0, "Short 01"), (121, "Short 02"), (242, "Short 03")]
+    assert ET.fromstring(response.text).find("profile").attrib == ET.fromstring(shorts_xml).find("profile").attrib
+    assert _prop(_master(response.text), "kdenlive:maxduration") == _prop(_master(shorts_xml), "kdenlive:maxduration")

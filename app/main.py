@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import traceback
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -103,6 +103,7 @@ class ExportClip(BaseModel):
 class ExportRequest(BaseModel):
     media: list[ExportMedia]
     clips: list[ExportClip] = Field(min_length=1)
+    layout: Literal["long", "shorts"]
 
     @model_validator(mode="after")
     def _clips_validos(self):

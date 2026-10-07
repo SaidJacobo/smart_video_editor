@@ -1,15 +1,15 @@
 """Arma el .kdenlive del timeline del editor: el mismo proyecto que
-project_long.build, pero con los clips que manda el frontend y la metadata
-de los videos leida en el navegador (el backend no tiene los videos).
-Ver SPEC-EXPORT-KDENLIVE.md."""
+project_long.build (layout "long") o que project_short.build_all (layout
+"shorts", un short por clip), pero con los clips que manda el frontend y la
+metadata de los videos leida en el navegador (el backend no tiene los
+videos). Ver SPEC-EXPORT-KDENLIVE.md y SPEC-SHORTS.md."""
 import itertools
 import os
 import tempfile
 import time
 import uuid
-import xml.etree.ElementTree as ET
 
-from gameplay_editor import mlt_xml
+from gameplay_editor import mlt_xml, project_short
 from gameplay_editor.config import load_config
 from gameplay_editor.project_long import _pip_rect
 from gameplay_editor.timecode import fps_to_rational, frame_to_tc, seconds_to_frame, seconds_to_tc
@@ -62,6 +62,8 @@ def _webcam_span(start, end, offset_frames, last_frame):
 
 def build(request):
     cfg = load_config()
+    shorts = request.layout == "shorts"
+    blur_cfg = cfg["shorts"]["background_blur"]
     ids = itertools.count(1)
     bin_ids = itertools.count(1)
 
@@ -69,12 +71,27 @@ def build(request):
     first = media_by_id[request.clips[0].mediaId].file
     fps = cfg["project"]["fps"] or first.fps
     fps_num, fps_den = fps_to_rational(fps)
-    width = cfg["project"]["width"] or first.width
-    height = cfg["project"]["height"] or first.height
     titulo = os.path.splitext(first.name)[0]
+    if shorts:
+        width, height = cfg["shorts"]["width"], cfg["shorts"]["height"]
+        titulo += "_shorts"
+    else:
+        width = cfg["project"]["width"] or first.width
+        height = cfg["project"]["height"] or first.height
 
-    output_duration = sum(c.out - c.in_ for c in request.clips)
-    out_tc = seconds_to_tc(output_duration, fps)
+    def clip_frames(clip):
+        # out inclusivo, como el out de MLT
+        return seconds_to_frame(clip.out, fps) - seconds_to_frame(clip.in_, fps) + 1
+
+    if shorts:
+        # se suman frames y no segundos para que cada guide caiga justo en el
+        # primer frame de su short (ver project_short.build_all_multi)
+        duration_frames = sum(clip_frames(c) for c in request.clips)
+        out_tc = frame_to_tc(duration_frames, fps)
+    else:
+        output_duration = sum(c.out - c.in_ for c in request.clips)
+        duration_frames = round(output_duration * fps)
+        out_tc = seconds_to_tc(output_duration, fps)
 
     canvas_id = "producer0"
     body = [mlt_xml.color_producer(canvas_id, out_tc)]
@@ -101,38 +118,59 @@ def build(request):
     has_webcam = bool(webcam_chains)
     gp_has_audio = any(m.file.audio for m in request.media)
     wc_has_audio = any(m.webcam and m.webcam.audio for m in request.media)
-    opacity = cfg["long"]["webcam_opacity"]
 
     def blank(frames):
-        return ET.Element("blank", {"length": frame_to_tc(frames, fps)})
+        return mlt_xml.blank(frame_to_tc(frames, fps))
+
+    def qtblend(x, y, w, h, opacity=1.0):
+        return mlt_xml.qtblend_filter(f"filter{next(ids)}", mlt_xml.rect_value(x, y, w, h, opacity))
 
     gp_video_entries, wc_video_entries = [], []
     gp_audio_entries, wc_audio_entries = [], []
+    blur_entries = []
+    guides = []
+    timeline_frame = 0
     for clip in request.clips:
         media = media_by_id[clip.mediaId]
         start, end = seconds_to_frame(clip.in_, fps), seconds_to_frame(clip.out, fps)
         in_tc, out_tc_clip = frame_to_tc(start, fps), frame_to_tc(end, fps)
-        clip_frames = end - start + 1
+        frames = clip_frames(clip)
+
+        if shorts:
+            guides.append({"frame": timeline_frame, "comment": f"Short {len(guides) + 1:02d}"})
+            timeline_frame += frames
+            # sin webcam el rect de la webcam no se usa: van las medidas del gameplay de relleno
+            webcam_info = media.webcam or media.file
+            gp_rect, wc_rect, blur_rect = project_short.short_rects(
+                cfg["shorts"], width, height,
+                media.file.width, media.file.height, webcam_info.width, webcam_info.height,
+            )
+            wc_opacity = 1.0
+        else:
+            gp_rect = (0, 0, width, height)
+            if media.webcam:
+                wc_rect = _pip_rect(cfg["long"], width, height, media.webcam.width, media.webcam.height)
+            wc_opacity = cfg["long"]["webcam_opacity"]
 
         gp_chain_id, gp_bin_id, _ = gameplay_chains[media.id]
-        gp_video_entries.append(mlt_xml.entry(
-            in_tc, out_tc_clip, gp_chain_id,
-            [mlt_xml.qtblend_filter(f"filter{next(ids)}", mlt_xml.rect_value(0, 0, width, height, 1.0))],
-            bin_id=gp_bin_id,
-        ))
+        gp_video_entries.append(mlt_xml.entry(in_tc, out_tc_clip, gp_chain_id, [qtblend(*gp_rect)], bin_id=gp_bin_id))
         gp_audio_entries.append(
             mlt_xml.entry(in_tc, out_tc_clip, gp_chain_id, bin_id=gp_bin_id)
-            if media.file.audio else blank(clip_frames)
+            if media.file.audio else blank(frames)
         )
+        if shorts and blur_cfg["enabled"]:
+            blur_filters = [qtblend(*blur_rect)] + [
+                mlt_xml.squareblur_filter(f"filter{next(ids)}", blur_cfg["kernel"]) for _ in range(blur_cfg["passes"])
+            ]
+            blur_entries.append(mlt_xml.entry(in_tc, out_tc_clip, gp_chain_id, blur_filters, bin_id=gp_bin_id))
 
         if not media.webcam:
-            wc_video_entries.append(blank(clip_frames))
-            wc_audio_entries.append(blank(clip_frames))
+            wc_video_entries.append(blank(frames))
+            wc_audio_entries.append(blank(frames))
             continue
 
         wc_chain_id, wc_bin_id, wc_length = webcam_chains[media.id]
         before, span, after = _webcam_span(start, end, round(media.webcam.offset * fps), wc_length - 1)
-        pip_x, pip_y, pip_w, pip_h = _pip_rect(cfg["long"], width, height, media.webcam.width, media.webcam.height)
 
         def webcam_items(filters):
             items = [blank(before)] if before else []
@@ -144,10 +182,8 @@ def build(request):
                 items.append(blank(after))
             return items
 
-        wc_video_entries.extend(webcam_items(
-            [mlt_xml.qtblend_filter(f"filter{next(ids)}", mlt_xml.rect_value(pip_x, pip_y, pip_w, pip_h, opacity))],
-        ))
-        wc_audio_entries.extend(webcam_items([]) if media.webcam.audio else [blank(clip_frames)])
+        wc_video_entries.extend(webcam_items([qtblend(*wc_rect, wc_opacity)]))
+        wc_audio_entries.extend(webcam_items([]) if media.webcam.audio else [blank(frames)])
 
     audio_track_ids, video_track_ids = [], []
 
@@ -163,6 +199,8 @@ def build(request):
         audio_track_ids.append(add_track(gp_audio_entries, "video"))
     if wc_has_audio:
         audio_track_ids.append(add_track(wc_audio_entries, "video"))
+    if blur_entries:
+        video_track_ids.append(add_track(blur_entries, "audio"))
     video_track_ids.append(add_track(gp_video_entries, "audio"))
     if has_webcam:
         video_track_ids.append(add_track(wc_video_entries, "audio"))
@@ -171,8 +209,10 @@ def build(request):
     master_id = f"tractor{next(ids)}"
     master = mlt_xml.master_tractor(
         master_id, out_tc, canvas_id, audio_track_ids, video_track_ids, sequence_uuid, titulo,
-        next(bin_ids), round(output_duration * fps),
+        next(bin_ids), duration_frames,
     )
+    if guides:
+        master.append(mlt_xml.guides_property(guides))
     body.append(master)
 
     document_id = str(int(time.time() * 1000))
@@ -180,7 +220,7 @@ def build(request):
     body.append(mlt_xml.main_bin_playlist(chain_entries, master_id, sequence_uuid, out_tc, document_id, profile_name))
     body.append(mlt_xml.project_tractor(f"tractor{next(ids)}", master_id, out_tc))
 
-    profile_el = mlt_xml.profile_element(width, height, fps_num, fps_den, vertical=False)
+    profile_el = mlt_xml.profile_element(width, height, fps_num, fps_den, vertical=shorts)
     root = mlt_xml.build_document(profile_el, body)
 
     with tempfile.TemporaryDirectory(prefix="video_editor_") as tmp:
