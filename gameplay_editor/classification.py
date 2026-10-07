@@ -18,7 +18,7 @@ import urllib.request
 
 from .audio_analysis import drop_short_segments, merge_intervals
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 SIN_TRANSCRIPCION = "sin_transcripcion"
 
@@ -45,12 +45,12 @@ _CATEGORY_DESCRIPTIONS = {
         "ver 'relleno'."
     ),
     "relleno": (
-        "habla sostenida sin contenido relevante (pensar en voz alta "
-        "repetitivo, muletillas, silencio de juego narrado sin gracia), O "
-        "una interjeccion/comentario aislado y trivial (probar microfono, "
-        "'hola hola', una palabra suelta, murmurar sin desarrollo) en un "
-        "tramo donde el resto es silencio. Candidato a recortar aunque "
-        "tenga volumen."
+        "explorar o caminar sin comentarios, menús, cargar partida, leer "
+        "notas o carteles, explicar controles o hablar de temas técnicos sin "
+        "gracia. También un comentario aislado y trivial (probar micrófono, "
+        "'hola hola', murmurar sin desarrollo) con mucho silencio antes y "
+        "después; un grito o una puteada por un susto o por perder no es "
+        "relleno aunque sea corto. Candidato a recortar aunque tenga volumen."
     ),
     "neutro": (
         "no es un highlight, pero aporta continuidad narrativa (explica que "
