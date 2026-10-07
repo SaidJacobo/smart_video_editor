@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 
-from gameplay_editor import classification, ffmpeg_utils, transcription
+from gameplay_editor import classification, ffmpeg_utils, project_short, transcription
 from gameplay_editor.config import load_config
 
 # clave de cache de transcription/classification; da igual cual sea porque
@@ -59,8 +59,8 @@ def correr_offset(segmentos, offset, duration):
 
 def analyze(gameplay_file, webcam_file, webcam_offset):
     """gameplay_file/webcam_file son file-likes binarios con el audio de cada
-    pista. Devuelve {duration, segments: [{start, end}]} en segundos del
-    gameplay. Lanza AnalysisError si algun audio no se puede leer o si
+    pista. Devuelve {duration, segments: [{start, end}], shorts: [{start, end}]}
+    en segundos del gameplay. Lanza AnalysisError si algun audio no se puede leer o si
     el clasificador no responde."""
     cfg = load_config()
     with tempfile.TemporaryDirectory(prefix="video_editor_") as tmp:
@@ -84,4 +84,13 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
             classified, duration, ["divertido_interesante"],
             padding_sec=cfg["classification"]["solo_relevante_padding_sec"],
         )
-    return {"duration": duration, "segments": [{"start": s, "end": e} for s, e in keep]}
+        s = cfg["shorts"]
+        windows = project_short.highlight_windows(
+            classification.classification_highlights(classified), duration,
+            s["pre_roll_sec"], s["post_roll_sec"], s["merge_gap_sec"],
+        )
+    return {
+        "duration": duration,
+        "segments": [{"start": a, "end": b} for a, b in keep],
+        "shorts": [{"start": a, "end": b} for a, b, _ in windows],
+    }

@@ -74,12 +74,13 @@ def _post(client, gameplay, webcam, offset="0"):
 
 
 def _cumple_contrato(body):
-    assert set(body) == {"duration", "segments"}
-    anterior_end = 0.0
-    for s in body["segments"]:
-        assert set(s) == {"start", "end"}
-        assert anterior_end <= s["start"] < s["end"] <= body["duration"]
-        anterior_end = s["end"]
+    assert set(body) == {"duration", "segments", "shorts"}
+    for tramos in (body["segments"], body["shorts"]):
+        anterior_end = 0.0
+        for s in tramos:
+            assert set(s) == {"start", "end"}
+            assert anterior_end <= s["start"] < s["end"] <= body["duration"]
+            anterior_end = s["end"]
 
 
 def test_correr_offset_resta_descarta_y_recorta():
@@ -116,6 +117,41 @@ def test_devuelve_evidencia_con_padding_y_dialogo_del_juego(client, audio, fake_
     assert body["segments"] == [{"start": 92.0, "end": 113.0}, {"start": 142.0, "end": 160.0}]
 
 
+def test_shorts_alrededor_de_cada_momento(client, audio, fake_whisper, fake_clasificador):
+    # el medio de la evidencia (102.5 y 182.5) +-18 s; el segundo se recorta al final del video
+    fake_whisper["jugador"] = [
+        _seg(100.0, 105.0, "jaja que paso", "jugador"),
+        _seg(180.0, 185.0, "jaja otra vez", "jugador"),
+    ]
+
+    body = _post(client, audio, audio).json()
+
+    _cumple_contrato(body)
+    assert body["shorts"] == [{"start": 84.5, "end": 120.5}, {"start": 164.5, "end": body["duration"]}]
+
+
+def test_shorts_cercanos_se_fusionan(client, audio, fake_whisper, fake_clasificador):
+    fake_whisper["jugador"] = [
+        _seg(40.0, 41.0, "jaja", "jugador"),
+        _seg(50.0, 51.0, "jaja", "jugador"),
+    ]
+
+    body = _post(client, audio, audio).json()
+
+    _cumple_contrato(body)
+    assert len(fake_clasificador) == 2
+    assert body["shorts"] == [{"start": 22.5, "end": 68.5}]
+
+
+def test_sin_momentos_no_hay_shorts(client, audio, fake_whisper, fake_clasificador):
+    fake_whisper["juego"] = [_seg(150.0, 152.0, "te estaba esperando", "juego")]
+
+    body = _post(client, audio, audio).json()
+
+    _cumple_contrato(body)
+    assert body["shorts"] == []
+
+
 def test_offset_mueve_la_webcam_al_tiempo_del_gameplay(client, audio, fake_whisper, fake_clasificador):
     # en la webcam la frase esta en w=100; con offset 30 cae en 70 del gameplay
     fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja que paso", "jugador")]
@@ -126,6 +162,7 @@ def test_offset_mueve_la_webcam_al_tiempo_del_gameplay(client, audio, fake_whisp
     [ventana] = fake_clasificador
     assert (ventana["inicio"], ventana["fin"]) == (45.0, 90.0)
     assert response.json()["segments"] == [{"start": 62.0, "end": 83.0}]
+    assert response.json()["shorts"] == [{"start": 54.5, "end": 90.5}]
 
 
 def test_sin_nada_que_conservar_devuelve_el_video_entero(client, audio, fake_whisper, fake_clasificador):
