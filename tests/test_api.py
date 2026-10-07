@@ -1,17 +1,16 @@
-"""Tests de POST /api/analyze. Whisper y ollama se reemplazan por fakes
-(salvo en el test de ollama apagado); los audios son silencio real generado
-con ffmpeg, para que ffprobe y la duracion pasen por el camino de verdad."""
+"""Tests de POST /api/analyze. Whisper y el clasificador (JEV) se reemplazan
+por fakes (salvo en el test sin API key); los audios son silencio real
+generado con ffmpeg, para que ffprobe y la duracion pasen por el camino de
+verdad."""
 import os
 import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
 
-import app.analyze
 from app.analyze import correr_offset
 from app.main import app as fastapi_app
 from gameplay_editor import classification, transcription
-from gameplay_editor.config import load_config
 
 DURACION = 200.0
 
@@ -47,7 +46,7 @@ def fake_whisper(monkeypatch):
 
 
 @pytest.fixture
-def fake_ollama(monkeypatch):
+def fake_clasificador(monkeypatch):
     """Clasifica divertido_interesante toda ventana que diga "jaja"; el resto
     es relleno. Guarda las ventanas que le llegan."""
     ventanas = []
@@ -58,7 +57,7 @@ def fake_ollama(monkeypatch):
             return {"categoria": "divertido_interesante", "razon": "se rie"}
         return {"categoria": "relleno", "razon": "nada"}
 
-    monkeypatch.setitem(classification._BACKENDS, "ollama", classify)
+    monkeypatch.setitem(classification._BACKENDS, "jev", classify)
     return ventanas
 
 
@@ -104,7 +103,7 @@ def test_correr_offset_negativo():
     ]
 
 
-def test_devuelve_evidencia_con_padding_y_dialogo_del_juego(client, audio, fake_whisper, fake_ollama):
+def test_devuelve_evidencia_con_padding_y_dialogo_del_juego(client, audio, fake_whisper, fake_clasificador):
     fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja que paso", "jugador")]
     fake_whisper["juego"] = [_seg(150.0, 152.0, "te estaba esperando", "juego")]
 
@@ -117,19 +116,19 @@ def test_devuelve_evidencia_con_padding_y_dialogo_del_juego(client, audio, fake_
     assert body["segments"] == [{"start": 92.0, "end": 113.0}, {"start": 142.0, "end": 160.0}]
 
 
-def test_offset_mueve_la_webcam_al_tiempo_del_gameplay(client, audio, fake_whisper, fake_ollama):
+def test_offset_mueve_la_webcam_al_tiempo_del_gameplay(client, audio, fake_whisper, fake_clasificador):
     # en la webcam la frase esta en w=100; con offset 30 cae en 70 del gameplay
     fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja que paso", "jugador")]
 
     response = _post(client, audio, audio, offset="30")
 
     assert response.status_code == 200
-    [ventana] = fake_ollama
+    [ventana] = fake_clasificador
     assert (ventana["inicio"], ventana["fin"]) == (45.0, 90.0)
     assert response.json()["segments"] == [{"start": 62.0, "end": 83.0}]
 
 
-def test_sin_nada_que_conservar_devuelve_el_video_entero(client, audio, fake_whisper, fake_ollama):
+def test_sin_nada_que_conservar_devuelve_el_video_entero(client, audio, fake_whisper, fake_clasificador):
     fake_whisper["jugador"] = [_seg(10.0, 12.0, "hola hola", "jugador")]
 
     body = _post(client, audio, audio).json()
@@ -137,7 +136,7 @@ def test_sin_nada_que_conservar_devuelve_el_video_entero(client, audio, fake_whi
     assert body["segments"] == [{"start": 0.0, "end": body["duration"]}]
 
 
-def test_no_deja_nada_en_disco(client, audio, fake_whisper, fake_ollama):
+def test_no_deja_nada_en_disco(client, audio, fake_whisper, fake_clasificador):
     fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja", "jugador")]
 
     assert _post(client, audio, audio).status_code == 200
@@ -175,20 +174,15 @@ def test_webcam_que_no_es_audio(client, audio, fake_whisper):
     assert response.json() == {"error": "No se pudo leer el audio de la webcam."}
 
 
-def test_ollama_apagado(client, audio, fake_whisper, monkeypatch):
-    # cliente de ollama real, contra un puerto donde no escucha nadie
-    def config_sin_ollama():
-        cfg = load_config()
-        cfg["classification"].update(ollama_host="http://127.0.0.1:1", retries=1)
-        return cfg
-
-    monkeypatch.setattr(app.analyze, "load_config", config_sin_ollama)
+def test_sin_api_key_de_jev(client, audio, fake_whisper, monkeypatch, capsys):
+    monkeypatch.delenv("JEV_API_KEY", raising=False)
     fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja", "jugador")]
 
     response = _post(client, audio, audio)
 
     assert response.status_code == 502
     assert response.json() == {"error": "No se pudo conectar con el clasificador."}
+    assert "Falta JEV_API_KEY" in capsys.readouterr().out
 
 
 def test_cors_para_el_frontend(client):

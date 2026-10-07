@@ -3,3 +3,4 @@ __pycache__/
 *.analisis.json
 *.kdenlive
 !ejemplo_*.kdenlive
+.env

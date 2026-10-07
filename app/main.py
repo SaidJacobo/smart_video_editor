@@ -8,6 +8,11 @@ POST /api/export/kdenlive arma el .kdenlive del timeline del editor
 --host 0.0.0.0 porque el frontend corre en Docker y llega por la red del
 contenedor, no por 127.0.0.1.
 """
+from dotenv import load_dotenv
+
+# antes del resto de los imports: JEV_API_KEY sale del .env
+load_dotenv()
+
 import traceback
 from typing import Annotated
 

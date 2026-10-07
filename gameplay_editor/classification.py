@@ -213,8 +213,85 @@ def _classify_ollama(window, categories, cfg):
     return {"categoria": categoria, "razon": parsed.get("razon", "")}
 
 
+_JEV_URL = "https://api.typesafe.ai/v1/systemone"
+
+_JEV_INSTRUCTIONS = (
+    "Sos un editor de video clasificando un tramo de una sesion de gameplay grabada. "
+    "Las lineas [jugador] son lo que dice quien juega (voz de webcam); las lineas [juego] "
+    "son dialogo/audio del propio videojuego (cinematicas, NPCs). Clasifica solo "
+    "`tramo_a_clasificar`; los contextos son los tramos vecinos y NO son lo que hay que "
+    "clasificar. Tene en cuenta `habla_real_seg` frente a `duracion_tramo_seg`: una frase "
+    "corta perdida en un tramo mayormente silencioso no es lo mismo que la misma frase en "
+    "un tramo donde se habla todo el tiempo."
+)
+
+
+def _jev_state(window):
+    state = {
+        "duracion_tramo_seg": round(window["fin"] - window["inicio"], 1),
+        "habla_real_seg": window.get("duracion_hablada", 0.0),
+    }
+    if window["contexto_antes"]:
+        state["contexto_antes"] = window["contexto_antes"]
+    state["tramo_a_clasificar"] = window["texto"]
+    if window["contexto_despues"]:
+        state["contexto_despues"] = window["contexto_despues"]
+    return state
+
+
+def _classify_jev(window, categories, cfg):
+    api_key = os.environ.get("JEV_API_KEY")
+    if not api_key:
+        raise RuntimeError("Falta JEV_API_KEY en el .env del backend")
+    payload = json.dumps({
+        "model": cfg["model"],
+        "state": _jev_state(window),
+        "questions": {
+            "categoria": {
+                "type": "choice",
+                "instructions": _JEV_INSTRUCTIONS,
+                "criteria": {c: _CATEGORY_DESCRIPTIONS[c] for c in categories},
+            },
+        },
+    }).encode("utf-8")
+    timeout_sec = cfg.get("timeout_sec", 180)
+    retries = cfg.get("retries", 3)
+    backoff_sec = cfg.get("retry_backoff_sec", 10)
+
+    last_error = None
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(
+            _JEV_URL, data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            break
+        # HTTPError hereda de URLError: va antes para no reintentar un 401/422,
+        # que van a fallar igual en cada intento.
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500:
+                raise RuntimeError(
+                    f"JEV respondio {e.code}: {e.read().decode('utf-8', 'replace')}"
+                ) from e
+            last_error = e
+        except _RETRYABLE_ERRORS as e:
+            last_error = e
+        if attempt < retries:
+            print(f"    [jev] intento {attempt}/{retries} fallo ({last_error}), "
+                  f"reintentando en {backoff_sec}s...")
+            time.sleep(backoff_sec)
+    else:
+        raise RuntimeError(f"No se pudo contactar a JEV tras {retries} intentos: {last_error}") from last_error
+
+    answer = body["answers"]["categoria"]
+    return {"categoria": answer["choice"], "razon": f"confianza {answer['confidence']:.2f}"}
+
+
 _BACKENDS = {
     "ollama": _classify_ollama,
+    "jev": _classify_jev,
 }
 
 

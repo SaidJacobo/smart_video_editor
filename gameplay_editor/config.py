@@ -44,15 +44,15 @@ DEFAULT_CONFIG = {
         "max_word_gap_sec": 2.0,
     },
     "classification": {
-        "backend": "ollama",  # "ollama" | "api"
-        "model": "qwen2.5:7b-instruct",
+        "backend": "jev",  # "jev" | "ollama"
+        "model": "jev-latest",
         "window_sec": 45.0,
         "context_windows": 2,
         "categories": ["divertido_interesante", "relleno", "neutro"],
         # margen +/- alrededor de la evidencia real al recortar un corte
         # "solo lo relevante" (ver classification.keep_segments_for_categories)
         "solo_relevante_padding_sec": 8.0,
-        # timeout/reintentos por llamada a ollama. Generoso porque si ollama
+        # timeout/reintentos por llamada al clasificador. Generoso porque si ollama
         # descargo el modelo de memoria por inactividad, la primera llamada
         # despues de eso tiene que recargarlo de disco antes de responder.
         "timeout_sec": 180,

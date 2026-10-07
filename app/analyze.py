@@ -61,7 +61,7 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
     """gameplay_file/webcam_file son file-likes binarios con el audio de cada
     pista. Devuelve {duration, segments: [{start, end}]} en segundos del
     gameplay. Lanza AnalysisError si algun audio no se puede leer o si
-    ollama no responde."""
+    el clasificador no responde."""
     cfg = load_config()
     with tempfile.TemporaryDirectory(prefix="video_editor_") as tmp:
         gameplay = _guardar(gameplay_file, os.path.join(tmp, "gameplay"))
@@ -77,7 +77,7 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
                 t, cfg["classification"], _CACHE_KEY, output_dir=tmp, duration=duration,
             )
         except RuntimeError as e:
-            print(f"    [ollama] {e}")
+            print(f"    [clasificador] {e}")
             raise AnalysisError(502, "No se pudo conectar con el clasificador.") from e
 
         keep = classification.keep_segments_for_categories(
