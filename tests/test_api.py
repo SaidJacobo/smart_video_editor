@@ -53,15 +53,15 @@ def fake_whisper(monkeypatch):
 
 @pytest.fixture
 def fake_clasificador(monkeypatch):
-    """Clasifica divertido_interesante toda ventana que diga "jaja"; el resto
-    es relleno. Guarda las ventanas que le llegan."""
+    """Clasifica divertido_interesante (confianza 0.8) toda ventana que diga
+    "jaja"; el resto es relleno. Guarda las ventanas que le llegan."""
     ventanas = []
 
     def classify(window, categories, cfg):
         ventanas.append(window)
         if "jaja" in window["texto"]:
-            return {"categoria": "divertido_interesante", "razon": "se rie"}
-        return {"categoria": "relleno", "razon": "nada"}
+            return {"categoria": "divertido_interesante", "razon": "se rie", "confianza": 0.8}
+        return {"categoria": "relleno", "razon": "nada", "confianza": 0.9}
 
     monkeypatch.setitem(classification._BACKENDS, "jev", classify)
     return ventanas
@@ -80,13 +80,18 @@ def _post(client, gameplay, webcam, offset="0"):
 
 
 def _cumple_contrato(body):
-    assert set(body) == {"duration", "segments", "shorts"}
-    for tramos in (body["segments"], body["shorts"]):
-        anterior_end = 0.0
-        for s in tramos:
-            assert set(s) == {"start", "end"}
-            assert anterior_end <= s["start"] < s["end"] <= body["duration"]
-            anterior_end = s["end"]
+    assert set(body) == {"duration", "windows", "shorts"}
+    # las ventanas pueden solaparse por el margen: solo van ordenadas por start
+    anterior_start = 0.0
+    for w in body["windows"]:
+        assert set(w) == {"start", "end", "confidence"}
+        assert anterior_start <= w["start"] < w["end"] <= body["duration"]
+        anterior_start = w["start"]
+    anterior_end = 0.0
+    for s in body["shorts"]:
+        assert set(s) == {"start", "end"}
+        assert anterior_end <= s["start"] < s["end"] <= body["duration"]
+        anterior_end = s["end"]
 
 
 def test_correr_offset_resta_descarta_y_recorta():
@@ -110,8 +115,11 @@ def test_correr_offset_negativo():
     ]
 
 
-def test_devuelve_evidencia_con_padding_y_dialogo_del_juego(client, audio, fake_whisper, fake_clasificador):
-    fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja que paso", "jugador")]
+def test_ventanas_candidatas_con_margen_y_confianza(client, audio, fake_whisper, fake_clasificador):
+    fake_whisper["jugador"] = [
+        _seg(100.0, 105.0, "jaja que paso", "jugador"),
+        _seg(130.0, 131.0, "bueno nada", "jugador"),
+    ]
     fake_whisper["juego"] = [_seg(150.0, 152.0, "te estaba esperando", "juego")]
 
     response = _post(client, audio, audio)
@@ -120,7 +128,45 @@ def test_devuelve_evidencia_con_padding_y_dialogo_del_juego(client, audio, fake_
     body = response.json()
     _cumple_contrato(body)
     assert body["duration"] == pytest.approx(DURACION, abs=0.1)
-    assert body["segments"] == [{"start": 92.0, "end": 113.0}, {"start": 142.0, "end": 160.0}]
+    # el relleno sin dialogo del juego (130-131) no se manda; el del juego si, siempre visible
+    assert body["windows"] == [
+        {"start": 98.0, "end": 107.0, "confidence": 0.8},
+        {"start": 148.0, "end": 154.0, "confidence": None},
+    ]
+
+
+def test_divertido_con_dialogo_del_juego_es_siempre_visible(client, audio, fake_whisper, fake_clasificador):
+    fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja", "jugador")]
+    fake_whisper["juego"] = [_seg(106.0, 108.0, "corre", "juego")]
+
+    body = _post(client, audio, audio).json()
+
+    assert body["windows"] == [{"start": 98.0, "end": 110.0, "confidence": None}]
+
+
+def test_ventanas_se_pueden_solapar_y_el_margen_respeta_los_bordes(client, audio, fake_whisper, fake_clasificador):
+    fake_whisper["jugador"] = [
+        _seg(1.0, 3.0, "jaja", "jugador"),
+        _seg(14.0, 16.0, "jaja", "jugador"),
+        _seg(197.0, 199.5, "jaja", "jugador"),
+    ]
+
+    body = _post(client, audio, audio).json()
+
+    _cumple_contrato(body)
+    starts_ends = [(w["start"], w["end"]) for w in body["windows"]]
+    assert starts_ends[:2] == [(0.0, 5.0), (12.0, 18.0)]
+    assert starts_ends[2][1] == pytest.approx(body["duration"])
+
+
+def test_ollama_sin_confianza_cuenta_como_segura(client, audio, fake_whisper, monkeypatch):
+    monkeypatch.setitem(
+        classification._BACKENDS, "jev",
+        lambda window, categories, cfg: {"categoria": "divertido_interesante", "razon": "se rie"},
+    )
+    fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja", "jugador")]
+
+    assert _post(client, audio, audio).json()["windows"] == [{"start": 98.0, "end": 107.0, "confidence": 1.0}]
 
 
 def test_shorts_alrededor_de_cada_momento(client, audio, fake_whisper, fake_clasificador):
@@ -167,16 +213,17 @@ def test_offset_mueve_la_webcam_al_tiempo_del_gameplay(client, audio, fake_whisp
     assert response.status_code == 200
     [ventana] = fake_clasificador
     assert (ventana["inicio"], ventana["fin"]) == (70.0, 75.0)
-    assert response.json()["segments"] == [{"start": 62.0, "end": 83.0}]
+    assert response.json()["windows"] == [{"start": 68.0, "end": 77.0, "confidence": 0.8}]
     assert response.json()["shorts"] == [{"start": 54.5, "end": 90.5}]
 
 
-def test_sin_nada_que_conservar_devuelve_el_video_entero(client, audio, fake_whisper, fake_clasificador):
+def test_sin_nada_que_conservar_no_hay_ventanas(client, audio, fake_whisper, fake_clasificador):
     fake_whisper["jugador"] = [_seg(10.0, 12.0, "hola hola", "jugador")]
 
     body = _post(client, audio, audio).json()
 
-    assert body["segments"] == [{"start": 0.0, "end": body["duration"]}]
+    _cumple_contrato(body)
+    assert body["windows"] == []
 
 
 def test_no_deja_nada_en_disco(client, audio, fake_whisper, fake_clasificador):

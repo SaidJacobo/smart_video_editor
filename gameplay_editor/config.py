@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
         "categories": ["divertido_interesante", "relleno", "neutro"],
         # margen +/- alrededor de la evidencia real al recortar un corte
         # "solo lo relevante" (ver classification.keep_segments_for_categories)
-        "solo_relevante_padding_sec": 8.0,
+        "solo_relevante_padding_sec": 2.0,
         # timeout/reintentos por llamada al clasificador. Generoso porque si ollama
         # descargo el modelo de memoria por inactividad, la primera llamada
         # despues de eso tiene que recargarlo de disco antes de responder.

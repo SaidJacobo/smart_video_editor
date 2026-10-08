@@ -83,10 +83,32 @@ def correr_offset(segmentos, offset, duration):
     return corridos
 
 
+def _ventanas_candidatas(classified, duration, padding):
+    """Ventanas que pueden aparecer en el video largo, sin fusionar: las que
+    tienen dialogo del juego (confidence None, siempre visibles) y las
+    divertido_interesante (con la confianza del clasificador; el editor las
+    filtra con el slider). Con el margen de padding a cada lado."""
+    candidatas = []
+    for w in classified:
+        if w["tiene_dialogo_juego"]:
+            confidence = None
+        elif w["categoria"] == "divertido_interesante":
+            # ollama no da confianza: se toma como segura
+            confidence = 1.0 if w["confianza"] is None else w["confianza"]
+        else:
+            continue
+        candidatas.append({
+            "start": max(0.0, w["inicio"] - padding),
+            "end": min(duration, w["fin"] + padding),
+            "confidence": confidence,
+        })
+    return candidatas
+
+
 def analyze(gameplay_file, webcam_file, webcam_offset):
     """gameplay_file/webcam_file son file-likes binarios con el audio de cada
-    pista. Devuelve {duration, segments: [{start, end}], shorts: [{start, end}]}
-    en segundos del gameplay. Lanza AnalysisError si algun audio no se puede leer o si
+    pista. Devuelve {duration, windows: [{start, end, confidence}], shorts:
+    [{start, end}]} en segundos del gameplay (ver CONTRATO-CORTES.md). Lanza AnalysisError si algun audio no se puede leer o si
     el clasificador no responde."""
     cfg = load_config()
     started = time.monotonic()
@@ -115,20 +137,17 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
 
         _log(f"{len(classified)} ventanas -> {dict(Counter(w['categoria'] for w in classified))}")
 
-        keep = classification.keep_segments_for_categories(
-            classified, duration, ["divertido_interesante"],
-            padding_sec=cfg["classification"]["solo_relevante_padding_sec"],
-        )
+        candidatas = _ventanas_candidatas(classified, duration, cfg["classification"]["solo_relevante_padding_sec"])
         s = cfg["shorts"]
         windows = project_short.highlight_windows(
             classification.classification_highlights(classified), duration,
             s["pre_roll_sec"], s["post_roll_sec"], s["merge_gap_sec"],
         )
-    kept_sec = sum(e - s for s, e in keep)
-    _log(f"listo en {time.monotonic() - started:.0f}s: {len(keep)} tramos ({kept_sec / 60:.1f} de "
-         f"{duration / 60:.1f} min), {len(windows)} shorts")
+    con_dialogo = sum(1 for w in candidatas if w["confidence"] is None)
+    _log(f"listo en {time.monotonic() - started:.0f}s: {len(candidatas)} ventanas candidatas "
+         f"({con_dialogo} con dialogo del juego), {len(windows)} shorts")
     return {
         "duration": duration,
-        "segments": [{"start": a, "end": b} for a, b in keep],
+        "windows": candidatas,
         "shorts": [{"start": a, "end": b} for a, b, _ in windows],
     }

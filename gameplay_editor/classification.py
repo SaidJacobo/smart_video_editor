@@ -12,6 +12,7 @@ que Paso 3 trata como "mantener por defecto").
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -325,7 +326,11 @@ def _classify_jev(window, categories, cfg):
         raise RuntimeError(f"No se pudo contactar a JEV tras {retries} intentos: {last_error}") from last_error
 
     answer = body["answers"]["categoria"]
-    return {"categoria": answer["choice"], "razon": f"confianza {answer['confidence']:.2f}"}
+    return {
+        "categoria": answer["choice"],
+        "razon": f"confianza {answer['confidence']:.2f}",
+        "confianza": answer["confidence"],
+    }
 
 
 _BACKENDS = {
@@ -359,6 +364,13 @@ def _signature(windows, cfg):
         "model": cfg["model"],
         "categories": cfg["categories"],
     }
+
+
+def _confianza_de_razon(razon):
+    """Las caches de antes de guardar la confianza la tienen solo en el texto
+    de razon ("confianza 0.64", ver _classify_jev)."""
+    match = re.fullmatch(r"confianza (\d+(?:\.\d+)?)", razon)
+    return float(match.group(1)) if match else None
 
 
 def classify(transcripcion, cfg, titulo, output_dir=None, force=False, duration=None):
@@ -403,6 +415,7 @@ def classify(transcripcion, cfg, titulo, output_dir=None, force=False, duration=
                 "fin": window["fin"],
                 "categoria": result["categoria"],
                 "razon": result.get("razon", ""),
+                "confianza": result.get("confianza"),
                 "texto": window["texto"],
             })
             with open(cache_file, "w", encoding="utf-8") as fh:
@@ -415,6 +428,8 @@ def classify(transcripcion, cfg, titulo, output_dir=None, force=False, duration=
     for w, window in zip(classified, windows):
         w["evidencia"] = window["evidencia"]
         w["tiene_dialogo_juego"] = window["tiene_dialogo_juego"]
+        if "confianza" not in w:
+            w["confianza"] = _confianza_de_razon(w["razon"])
 
     return classified
 

@@ -177,7 +177,7 @@ No hay flag de `--config` — los parámetros se ajustan editando
 | `classification.max_ventana_sec` | segundos | un tramo de habla más largo que esto se parte en su pausa más larga. Default: 90. |
 | `classification.context_windows` | número | cuántas ventanas antes y después se le pasan al LLM como contexto. |
 | `classification.categories` | lista | categorías a usar en el prompt; ajustable si no discriminan bien en la práctica. |
-| `classification.solo_relevante_padding_sec` | segundos | margen antes y después de la primera y la última frase de cada tramo conservado. Default: 8. |
+| `classification.solo_relevante_padding_sec` | segundos | margen antes y después de la primera y la última frase de cada tramo conservado. Default: 2. |
 | `classification.timeout_sec` / `retries` / `retry_backoff_sec` | segundos / número / segundos | timeout de cada llamada a ollama, cantidad de intentos y espera entre intentos. El timeout es generoso porque si ollama descargó el modelo de memoria por inactividad, la primera llamada tiene que volver a cargarlo. |
 | `long.webcam_rect_pct` | `x,y,w,h` (0–1, % del canvas) | posición/tamaño del PiP de la webcam en el video largo. Default: arriba a la derecha. |
 | `shorts.webcam_rect_pct` / `shorts.gameplay_rect_pct` | `x,y,w,h` (0–1) | las dos franjas del short: webcam arriba, gameplay abajo. `h: null` en `gameplay_rect_pct` significa "lo que quede hasta el borde". |

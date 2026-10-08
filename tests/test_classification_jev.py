@@ -69,7 +69,7 @@ def test_manda_el_request_de_la_spec(jev, cfg):
 
     resultado = classification.classify_window(_ventana("[juego] antes", "[jugador] despues"), cfg)
 
-    assert resultado == {"categoria": "relleno", "razon": "confianza 0.91"}
+    assert resultado == {"categoria": "relleno", "razon": "confianza 0.91", "confianza": 0.91}
     [req] = jev["requests"]
     assert req.full_url == "https://api.typesafe.ai/v1/systemone"
     assert req.get_header("Authorization") == "Bearer ts_test"
@@ -143,3 +143,22 @@ def test_prompt_de_ollama_con_el_silencio_alrededor():
     prompt = classification._build_prompt(_ventana(), ["relleno"])
     assert prompt.startswith(classification._EDITOR_PROMPT)
     assert "Antes de este tramo hubo 30s sin dialogo y despues 12s." in prompt
+
+
+def test_cache_vieja_sin_confianza_la_lee_de_razon(cfg, monkeypatch, tmp_path):
+    transcripcion = {"jugador": [{"inicio": 10.0, "fin": 12.0, "texto": "jaja", "fuente": "jugador"}], "juego": []}
+    monkeypatch.setitem(
+        classification._BACKENDS, cfg["backend"],
+        lambda window, categories, cfg: {"categoria": "divertido_interesante", "razon": "confianza 0.64"},
+    )
+    classification.classify(transcripcion, cfg, "t", output_dir=str(tmp_path), duration=30.0)
+    cache_file = tmp_path / "t.clasificacion.json"
+    cache = json.loads(cache_file.read_text(encoding="utf-8"))
+    for w in cache["windows"]:
+        del w["confianza"]
+    cache_file.write_text(json.dumps(cache), encoding="utf-8")
+    monkeypatch.setitem(classification._BACKENDS, cfg["backend"], None)
+
+    clasificadas = classification.classify(transcripcion, cfg, "t", output_dir=str(tmp_path), duration=30.0)
+
+    assert [w["confianza"] for w in clasificadas] == [None, 0.64, None]
