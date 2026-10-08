@@ -31,6 +31,12 @@ def client():
     return TestClient(fastapi_app)
 
 
+@pytest.fixture(autouse=True)
+def sin_debug(monkeypatch):
+    # app.main carga el .env, que puede definir DEBUG_OUTPUT_DIR
+    monkeypatch.delenv("DEBUG_OUTPUT_DIR", raising=False)
+
+
 @pytest.fixture
 def fake_whisper(monkeypatch):
     """Reemplaza la transcripcion: el test carga en `pistas` lo que "se dijo"
@@ -181,6 +187,22 @@ def test_no_deja_nada_en_disco(client, audio, fake_whisper, fake_clasificador):
 
     assert len(fake_whisper["output_dirs"]) == 1
     assert not os.path.exists(fake_whisper["output_dirs"][0])
+
+
+def test_debug_output_dir_guarda_cada_corrida(client, audio, fake_whisper, fake_clasificador, monkeypatch, tmp_path):
+    monkeypatch.setenv("DEBUG_OUTPUT_DIR", str(tmp_path))
+    fake_whisper["jugador"] = [_seg(100.0, 105.0, "jaja", "jugador")]
+
+    assert _post(client, audio, audio).status_code == 200
+    assert _post(client, audio, audio).status_code == 200
+
+    carpetas = sorted(tmp_path.iterdir())
+    assert len(carpetas) == 2
+    assert [str(c) for c in carpetas] == sorted(fake_whisper["output_dirs"])
+    for carpeta in carpetas:
+        assert (carpeta / "analisis.clasificacion.json").exists()
+    # cada corrida clasifica de cero: la cache de la anterior no se reutiliza
+    assert len(fake_clasificador) == 2
 
 
 @pytest.mark.parametrize("data, files", [

@@ -2,6 +2,7 @@
 editor.py::_build_session (sin --con-neutro), pero con los dos audios que
 sube el frontend y devolviendo los tramos a conservar en vez de armar los
 .kdenlive. Ver SPEC-fastapi.md."""
+import contextlib
 import os
 import shutil
 import subprocess
@@ -19,6 +20,25 @@ _CACHE_KEY = "analisis"
 
 def _log(message):
     print(f"[analyze {time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+@contextlib.contextmanager
+def _carpeta_de_trabajo():
+    """Carpeta temporal que se borra al terminar; con DEBUG_OUTPUT_DIR, una
+    subcarpeta nueva <fecha-hora> que se conserva con los .json de la corrida."""
+    debug_dir = os.environ.get("DEBUG_OUTPUT_DIR")
+    if not debug_dir:
+        with tempfile.TemporaryDirectory(prefix="video_editor_") as tmp:
+            yield tmp
+        return
+    base = os.path.join(debug_dir, time.strftime("%Y-%m-%d_%H-%M-%S"))
+    path, n = base, 1
+    while os.path.exists(path):
+        n += 1
+        path = f"{base}_{n}"
+    os.makedirs(path)
+    _log(f"guardando la corrida en {os.path.abspath(path)}")
+    yield path
 
 
 class AnalysisError(Exception):
@@ -70,7 +90,7 @@ def analyze(gameplay_file, webcam_file, webcam_offset):
     el clasificador no responde."""
     cfg = load_config()
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="video_editor_") as tmp:
+    with _carpeta_de_trabajo() as tmp:
         gameplay = _guardar(gameplay_file, os.path.join(tmp, "gameplay"))
         webcam = _guardar(webcam_file, os.path.join(tmp, "webcam"))
         duration = _duracion_audio(gameplay, "No se pudo leer el audio del gameplay.")
