@@ -52,7 +52,48 @@ DEFAULT_CONFIG = {
         "silencio_corte_sec": 10.0,
         "max_ventana_sec": 90.0,
         "context_windows": 2,
-        "categories": ["divertido_interesante", "relleno", "neutro"],
+        # preset Gameplay del editor (analysis/presets.ts del frontend), para
+        # el CLI que no tiene formulario
+        "categories": [
+            {
+                "label": "Divertido",
+                "description": (
+                    "Reacción genuina con desarrollo (más de una palabra o exclamación suelta) o "
+                    "comentario gracioso de quien grabó el video. Una interjección aislada rodeada "
+                    "de silencio no alcanza: eso es Relleno."
+                ),
+                "keep": True,
+            },
+            {
+                "label": "Narrativa / cinemática",
+                "description": (
+                    "Tramo donde lo que se escucha es sobre todo el propio contenido contando la "
+                    "historia: cinemáticas, diálogos de personajes, narración del juego. Quien "
+                    "grabó habla poco o nada."
+                ),
+                "keep": True,
+            },
+            {
+                "label": "Neutro",
+                "description": (
+                    "No es un momento destacado, pero aporta continuidad: explica qué está pasando "
+                    "o avanza la historia."
+                ),
+                "keep": False,
+            },
+            {
+                "label": "Relleno",
+                "description": (
+                    "Tiempo muerto sin nada que aporte: esperas, preparativos (acomodarse, configurar "
+                    "o cargar algo), logística, temas técnicos o narración sin gracia. También un "
+                    "comentario aislado y trivial (probar el micrófono, 'hola hola', murmurar sin "
+                    "desarrollo) con mucho silencio antes y después; una reacción genuina (un grito, "
+                    "una risa, una puteada) no es relleno aunque sea corta. Candidato a recortar "
+                    "aunque tenga volumen."
+                ),
+                "keep": False,
+            },
+        ],
         # margen +/- alrededor de la evidencia real al recortar un corte
         # "solo lo relevante" (ver classification.keep_segments_for_categories)
         "solo_relevante_padding_sec": 2.0,
@@ -73,9 +114,9 @@ DEFAULT_CONFIG = {
         # (webcam arriba, gameplay abajo) llenando el 100% del canvas entre los dos.
         "width": 1080,
         "height": 1920,
-        "pre_roll_sec": 18.0,
-        "post_roll_sec": 18.0,
-        "merge_gap_sec": 5.0,
+        # un short por cada ventana de categoria conservada con al menos esta
+        # confianza (en el editor la elige el slider)
+        "min_confidence": 0.4,
         "webcam_rect_pct": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.4},
         "gameplay_rect_pct": {"x": 0.0, "y": 0.4, "w": 1.0, "h": None},
         "webcam_fit": "cover",

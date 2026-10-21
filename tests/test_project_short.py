@@ -33,17 +33,17 @@ def videos(tmp_path_factory):
 
 @pytest.fixture
 def cfg():
-    cfg = load_config()
-    cfg["shorts"].update({"pre_roll_sec": 2.0, "post_roll_sec": 2.0, "merge_gap_sec": 1.0})
-    return cfg
+    return load_config()
 
 
-def _session(videos, n, highlights):
+def _session(videos, n, shorts):
+    """shorts: (start, end) o (start, end, confidence)."""
     gp, wc = videos[f"gameplay{n}"], videos[f"webcam{n}"]
     gp_info = ffmpeg_utils.video_info(gp)
     return {"gameplay": gp, "webcam": wc, "analysis": {
         "duration": gp_info["duration"], "gameplay_info": gp_info, "webcam_info": ffmpeg_utils.video_info(wc),
-        "keep_segments": [], "highlights": [{"time": t, "score": 1.0} for t in highlights],
+        "keep_segments": [], "highlights": [],
+        "shorts": [{"start": w[0], "end": w[1], "confidence": w[2] if len(w) > 2 else 1.0} for w in shorts],
     }}
 
 
@@ -76,7 +76,7 @@ def _pistas(path):
 
 
 def test_una_secuencia_con_una_guide_por_short(videos, cfg, tmp_path):
-    s = _session(videos, 1, [3.0, 10.0])
+    s = _session(videos, 1, [(1.0, 5.0), (8.0, 12.0)])
     path = project_short.build_all(s["gameplay"], s["webcam"], cfg, s["analysis"], "partida", str(tmp_path))
 
     [master] = _secuencias(path)
@@ -93,7 +93,7 @@ def test_una_secuencia_con_una_guide_por_short(videos, cfg, tmp_path):
 
 
 def test_varias_sesiones_en_la_misma_secuencia(videos, cfg, tmp_path):
-    sessions = [_session(videos, 1, [3.0]), _session(videos, 2, [5.0, 15.0])]
+    sessions = [_session(videos, 1, [(1.0, 5.0)]), _session(videos, 2, [(3.0, 7.0), (13.0, 17.0)])]
 
     path = project_short.build_all_multi(sessions, cfg, "partida", str(tmp_path))
 
@@ -114,7 +114,7 @@ def test_varias_sesiones_en_la_misma_secuencia(videos, cfg, tmp_path):
 
 def test_sesion_sin_momentos_no_aporta_shorts(videos, cfg, tmp_path):
     path = project_short.build_all_multi(
-        [_session(videos, 1, []), _session(videos, 2, [5.0])], cfg, "partida", str(tmp_path),
+        [_session(videos, 1, []), _session(videos, 2, [(3.0, 7.0)])], cfg, "partida", str(tmp_path),
     )
     # solo cuenta el audio de las sesiones con shorts: el gameplay2 no tiene
     pistas = _pistas(path)
@@ -122,6 +122,25 @@ def test_sesion_sin_momentos_no_aporta_shorts(videos, cfg, tmp_path):
     assert [e[3] for e in pistas[1][1]] == [videos["gameplay2"]]
 
 
+def test_solo_los_shorts_con_la_confianza_minima(videos, cfg, tmp_path):
+    s = _session(videos, 1, [(1.0, 5.0, 0.3), (8.0, 12.0, 0.4), (14.0, 18.0, 0.9)])
+    path = project_short.build_all(s["gameplay"], s["webcam"], cfg, s["analysis"], "partida", str(tmp_path))
+
+    _, _, v_gp, _ = _pistas(path)
+    assert [e[1:3] for e in v_gp[1]] == [("00:00:08.000", "00:00:12.000"), ("00:00:14.000", "00:00:18.000")]
+
+
+def test_shorts_solapados_no_se_fusionan(videos, cfg, tmp_path):
+    s = _session(videos, 1, [(1.0, 5.0), (4.0, 9.0)])
+    path = project_short.build_all(s["gameplay"], s["webcam"], cfg, s["analysis"], "partida", str(tmp_path))
+
+    _, _, v_gp, _ = _pistas(path)
+    assert [e[1:3] for e in v_gp[1]] == [("00:00:01.000", "00:00:05.000"), ("00:00:04.000", "00:00:09.000")]
+
+
 def test_sin_momentos_no_escribe_nada(videos, cfg, tmp_path):
     assert project_short.build_all_multi([_session(videos, 1, [])], cfg, "partida", str(tmp_path)) is None
+    assert project_short.build_all_multi(
+        [_session(videos, 1, [(1.0, 5.0, 0.1)])], cfg, "partida", str(tmp_path),
+    ) is None
     assert list(tmp_path.iterdir()) == []

@@ -14,12 +14,22 @@ def cfg():
     return load_config()["classification"]
 
 
-def _seg(inicio, fin, texto="algo", fuente="jugador"):
+SETTINGS = {
+    "contentType": "gameplay",
+    "description": "",
+    "categories": [
+        {"label": "Neutro", "description": "", "keep": True},
+        {"label": "Relleno", "description": "", "keep": False},
+    ],
+}
+
+
+def _seg(inicio, fin, texto="algo", fuente="creador"):
     return {"inicio": inicio, "fin": fin, "texto": texto, "fuente": fuente}
 
 
-def _ventanas(cfg, jugador=(), juego=(), duration=None):
-    return classification.build_windows({"jugador": list(jugador), "juego": list(juego)}, cfg, duration)
+def _ventanas(cfg, creador=(), contenido=(), duration=None):
+    return classification.build_windows({"creador": list(creador), "contenido": list(contenido)}, cfg, duration)
 
 
 def _con_texto(ventanas):
@@ -27,38 +37,38 @@ def _con_texto(ventanas):
 
 
 def test_corta_en_silencio_de_las_dos_pistas(cfg):
-    jugador = [_seg(5.0, 8.0, "hola"), _seg(15.0, 17.0, "que tal"), _seg(27.0, 30.0, "chau")]
+    creador = [_seg(5.0, 8.0, "hola"), _seg(15.0, 17.0, "que tal"), _seg(27.0, 30.0, "chau")]
 
-    ventanas = _ventanas(cfg, jugador, duration=60.0)
+    ventanas = _ventanas(cfg, creador, duration=60.0)
 
     # 15 - 8 = 7 s sigue el tramo; 27 - 17 = 10 s lo corta
     assert [(w["inicio"], w["fin"], w["texto"]) for w in ventanas] == [
         (0.0, 5.0, None),
-        (5.0, 17.0, "[jugador] hola\n[jugador] que tal"),
+        (5.0, 17.0, "[voz del creador] hola\n[voz del creador] que tal"),
         (17.0, 27.0, None),
-        (27.0, 30.0, "[jugador] chau"),
+        (27.0, 30.0, "[voz del creador] chau"),
         (30.0, 60.0, None),
     ]
     assert [w["evidencia"] for w in _con_texto(ventanas)] == [(5.0, 17.0), (27.0, 30.0)]
 
 
-def test_dialogo_del_juego_no_deja_cortar(cfg):
-    jugador = [_seg(0.0, 2.0, "mira"), _seg(20.0, 22.0, "que bueno")]
-    juego = [_seg(8.0, 14.0, "te estaba esperando", "juego")]
+def test_el_audio_del_contenido_no_deja_cortar(cfg):
+    creador = [_seg(0.0, 2.0, "mira"), _seg(20.0, 22.0, "que bueno")]
+    contenido = [_seg(8.0, 14.0, "te estaba esperando", "contenido")]
 
-    [ventana] = _con_texto(_ventanas(cfg, jugador, juego, duration=30.0))
+    [ventana] = _con_texto(_ventanas(cfg, creador, contenido, duration=30.0))
 
     assert (ventana["inicio"], ventana["fin"]) == (0.0, 22.0)
-    assert ventana["tiene_dialogo_juego"]
+    assert ventana["tiene_voz_creador"]
     assert ventana["duracion_hablada"] == 10.0
 
 
 def test_segmento_largo_que_tapa_a_otros_no_corta(cfg):
     # el fin maximo del tramo es 30, aunque el ultimo segmento visto termine en 6
-    juego = [_seg(0.0, 30.0, "cinematica", "juego")]
-    jugador = [_seg(5.0, 6.0, "uh"), _seg(35.0, 36.0, "ya")]
+    contenido = [_seg(0.0, 30.0, "cinematica", "contenido")]
+    creador = [_seg(5.0, 6.0, "uh"), _seg(35.0, 36.0, "ya")]
 
-    [ventana] = _con_texto(_ventanas(cfg, jugador, juego))
+    [ventana] = _con_texto(_ventanas(cfg, creador, contenido))
 
     assert (ventana["inicio"], ventana["fin"]) == (0.0, 36.0)
 
@@ -66,18 +76,18 @@ def test_segmento_largo_que_tapa_a_otros_no_corta(cfg):
 def test_tramo_largo_se_parte_en_su_pausa_mas_larga(cfg):
     # frases de 4 s cada 5 s de 0 a 99, con una pausa de 6 s entre 49 y 55: ningun
     # silencio llega a 10 s, pero el tramo dura 99 s
-    jugador = [_seg(float(t), t + 4.0) for t in [*range(0, 50, 5), *range(55, 100, 5)]]
+    creador = [_seg(float(t), t + 4.0) for t in [*range(0, 50, 5), *range(55, 100, 5)]]
 
-    ventanas = _con_texto(_ventanas(cfg, jugador))
+    ventanas = _con_texto(_ventanas(cfg, creador))
 
     assert [(w["inicio"], w["fin"]) for w in ventanas] == [(0.0, 49.0), (55.0, 99.0)]
 
 
 def test_parte_hasta_que_todas_entran(cfg):
     cfg = {**cfg, "max_ventana_sec": 20.0}
-    jugador = [_seg(0.0, 9.0), _seg(10.0, 19.0), _seg(21.0, 30.0), _seg(30.5, 39.0), _seg(42.0, 50.0)]
+    creador = [_seg(0.0, 9.0), _seg(10.0, 19.0), _seg(21.0, 30.0), _seg(30.5, 39.0), _seg(42.0, 50.0)]
 
-    ventanas = _con_texto(_ventanas(cfg, jugador))
+    ventanas = _con_texto(_ventanas(cfg, creador))
 
     assert [(w["inicio"], w["fin"]) for w in ventanas] == [(0.0, 19.0), (21.0, 39.0), (42.0, 50.0)]
 
@@ -88,27 +98,28 @@ def test_un_solo_segmento_largo_queda_entero(cfg):
 
 
 def test_cada_segmento_en_exactamente_una_ventana(cfg):
-    jugador = [_seg(float(t), t + 3.0, f"j{t}") for t in range(0, 300, 7)]
-    juego = [_seg(t + 1.0, t + 2.0, f"g{t}", "juego") for t in range(0, 300, 23)]
+    creador = [_seg(float(t), t + 3.0, f"j{t}") for t in range(0, 300, 7)]
+    contenido = [_seg(t + 1.0, t + 2.0, f"g{t}", "contenido") for t in range(0, 300, 23)]
 
-    textos = [w["texto"] for w in _ventanas(cfg, jugador, juego, duration=310.0) if w["texto"]]
+    textos = [w["texto"] for w in _ventanas(cfg, creador, contenido, duration=310.0) if w["texto"]]
     lineas = [linea for texto in textos for linea in texto.split("\n")]
 
-    esperado = [f"[{s['fuente']}] {s['texto']}" for s in jugador + juego]
+    etiquetas = {"creador": "[voz del creador]", "contenido": "[audio del contenido]"}
+    esperado = [f"{etiquetas[s['fuente']]} {s['texto']}" for s in creador + contenido]
     assert sorted(lineas) == sorted(esperado)
 
 
 def test_contexto_y_silencio_alrededor(cfg):
-    jugador = [_seg(10.0, 12.0, "a"), _seg(30.0, 32.0, "b"), _seg(50.0, 52.0, "c"), _seg(80.0, 82.0, "d")]
+    creador = [_seg(10.0, 12.0, "a"), _seg(30.0, 32.0, "b"), _seg(50.0, 52.0, "c"), _seg(80.0, 82.0, "d")]
 
-    ventanas = _con_texto(_ventanas(cfg, jugador, duration=100.0))
+    ventanas = _con_texto(_ventanas(cfg, creador, duration=100.0))
 
     assert [(w["silencio_antes"], w["silencio_despues"]) for w in ventanas] == [
         (10.0, 18.0), (18.0, 18.0), (18.0, 28.0), (28.0, 18.0),
     ]
     assert ventanas[0]["contexto_antes"] == ""
-    assert ventanas[0]["contexto_despues"] == "[jugador] b\n---\n[jugador] c"
-    assert ventanas[3]["contexto_antes"] == "[jugador] b\n---\n[jugador] c"
+    assert ventanas[0]["contexto_despues"] == "[voz del creador] b\n---\n[voz del creador] c"
+    assert ventanas[3]["contexto_antes"] == "[voz del creador] b\n---\n[voz del creador] c"
 
 
 def test_sin_segmentos(cfg):
@@ -135,11 +146,11 @@ def test_ventanas_sin_texto_no_se_clasifican(cfg, monkeypatch, tmp_path):
     llamadas = []
     monkeypatch.setitem(
         classification._BACKENDS, cfg["backend"],
-        lambda window, categories, cfg: llamadas.append(window) or {"categoria": "neutro", "razon": ""},
+        lambda window, settings, dos_videos, cfg: llamadas.append(window) or {"categoria": "neutro", "razon": ""},
     )
 
     clasificadas = classification.classify(
-        {"jugador": [_seg(10.0, 20.0)], "juego": []}, cfg, "t", output_dir=str(tmp_path), duration=60.0,
+        {"creador": [_seg(10.0, 20.0)], "contenido": []}, cfg, SETTINGS, "t", output_dir=str(tmp_path), duration=60.0,
     )
 
     assert [w["categoria"] for w in clasificadas] == [
@@ -149,19 +160,28 @@ def test_ventanas_sin_texto_no_se_clasifican(cfg, monkeypatch, tmp_path):
 
 
 def test_no_reusa_cache_de_ventanas_fijas(cfg, monkeypatch, tmp_path):
-    transcripcion = {"jugador": [_seg(10.0, 20.0)], "juego": []}
+    transcripcion = {"creador": [_seg(10.0, 20.0)], "contenido": []}
     llamadas = []
     monkeypatch.setitem(
         classification._BACKENDS, cfg["backend"],
-        lambda window, categories, cfg: llamadas.append(window) or {"categoria": "neutro", "razon": ""},
+        lambda window, settings, dos_videos, cfg: llamadas.append(window) or {"categoria": "neutro", "razon": ""},
     )
-    classification.classify(transcripcion, cfg, "t", output_dir=str(tmp_path), duration=60.0)
+    classification.classify(transcripcion, cfg, SETTINGS, "t", output_dir=str(tmp_path), duration=60.0)
     path = os.path.join(tmp_path, "t.clasificacion.json")
     with open(path, encoding="utf-8") as fh:
         cache = fh.read()
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(cache.replace('"prompt_version": "v4"', '"prompt_version": "v1"'))
+        fh.write(cache.replace('"prompt_version": "v5"', '"prompt_version": "v1"'))
 
-    classification.classify(transcripcion, cfg, "t", output_dir=str(tmp_path), duration=60.0)
+    classification.classify(transcripcion, cfg, SETTINGS, "t", output_dir=str(tmp_path), duration=60.0)
 
     assert len(llamadas) == 2
+
+
+def test_con_un_solo_video_no_hay_etiquetas(cfg):
+    ventanas = classification.build_windows(
+        {"creador": None, "contenido": [_seg(5.0, 8.0, "hola", "contenido"), _seg(9.0, 10.0, "chau", "contenido")]},
+        cfg, 20.0,
+    )
+    assert [w["texto"] for w in _con_texto(ventanas)] == ["hola\nchau"]
+    assert not ventanas[1]["tiene_voz_creador"]

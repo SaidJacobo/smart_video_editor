@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Editor automatico de gameplays: transcribe ambas pistas (webcam + juego),
 clasifica el contenido con un LLM y arma el video largo (gameplay a pantalla
-completa + webcam en PiP) SOLO con lo relevante: momentos clasificados como
-divertido_interesante + diálogo real del juego (siempre, sin pasar por
-clasificacion). Silencio total (sin transcripcion en ninguna pista) se
+completa + webcam en PiP) SOLO con lo relevante: las categorias en Conservar
+del preset de Gameplay (cfg["classification"]["categories"]: Divertido y
+Narrativa / cinemática). Silencio total (sin transcripcion en ninguna pista) se
 corta por default junto con todo lo demas -- ver --con-neutro para un corte
 mas completo. Tambien genera shorts verticales (9:16) alrededor de cada
-momento divertido_interesante. Genera proyectos Kdenlive listos para ajuste
+momento conservado en el que habla el jugador. Genera proyectos Kdenlive listos para ajuste
 fino manual. No renderiza nada.
 
 Uso:
@@ -44,16 +44,19 @@ def _build_session(gameplay_path, webcam_path, cfg, cache_key, output_dir, force
     transcripcion = transcription.transcribe(
         gameplay_path, webcam_path, cfg["transcription"], cache_key, output_dir=output_dir,
     )
-    print(f"    jugador: {len(transcripcion['jugador'])} segmentos, juego: {len(transcripcion['juego'])} segmentos")
+    print(f"    creador: {len(transcripcion['creador'])} segmentos, "
+          f"contenido: {len(transcripcion['contenido'])} segmentos")
 
-    print("  Clasificacion por LLM (ollama, una llamada por ventana)...")
+    print("  Clasificacion por LLM (una llamada por ventana)...")
+    settings = {"contentType": "gameplay", "description": "", "categories": cfg["classification"]["categories"]}
     classified = classification.classify(
-        transcripcion, cfg["classification"], cache_key,
+        transcripcion, cfg["classification"], settings, cache_key,
         output_dir=output_dir, force=force_clasification, duration=duration,
     )
     print(f"    {len(classified)} ventanas -> {dict(Counter(w['categoria'] for w in classified))}")
 
-    categorias = ["divertido_interesante"] + (["neutro"] if con_neutro else [])
+    conservadas = [c["label"] for c in settings["categories"] if c["keep"]]
+    categorias = conservadas + (["Neutro"] if con_neutro else [])
     keep = classification.keep_segments_for_categories(
         classified, duration, categorias,
         padding_sec=cfg["classification"]["solo_relevante_padding_sec"],
@@ -68,7 +71,11 @@ def _build_session(gameplay_path, webcam_path, cfg, cache_key, output_dir, force
         "gameplay_info": gp_info,
         "webcam_info": wc_info,
         "keep_segments": keep,
-        "highlights": classification.classification_highlights(classified),
+        "highlights": classification.classification_highlights(classified, conservadas),
+        "shorts": classification.short_windows(
+            classified, duration, cfg["classification"]["solo_relevante_padding_sec"], conservadas,
+            exigir_creador=True,
+        ),
     }
     return {"gameplay": gameplay_path, "webcam": webcam_path, "analysis": analysis}
 
@@ -109,10 +116,10 @@ def main():
                               "La transcripcion se sigue invalidando sola por mtime de los videos; para "
                               "forzarla sin eso, borrar el .transcripcion.json a mano.")
     parser.add_argument("--con-neutro", action="store_true",
-                         help="Por default el corte conserva solo lo clasificado como "
-                              "divertido_interesante (+ dialogo real del juego, siempre). Silencio total "
+                         help="Por default el corte conserva solo las categorias en Conservar del "
+                              "preset de Gameplay (Divertido, Narrativa / cinemática). Silencio total "
                               "(sin transcripcion en ninguna pista) se corta por default. Con este flag, "
-                              "tambien conserva lo clasificado como neutro Y protege el silencio total "
+                              "tambien conserva lo clasificado como Neutro Y protege el silencio total "
                               "(para no perder cinematicas silenciosas) -- un corte mas completo/menos "
                               "agresivo en general.")
     args = parser.parse_args()

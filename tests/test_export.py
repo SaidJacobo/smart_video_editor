@@ -176,6 +176,13 @@ def test_shorts_rects_con_las_medidas_de_cada_video(client):
         assert v2[1][i][4] == "00:00:00.000=" + " ".join(f"{v:g}" for v in wc_rect) + " 1"
 
 
+def test_shorts_sin_webcam_el_gameplay_ocupa_todo_el_cuadro(client):
+    a1, v1 = _pistas(_post(client, [_media(con_webcam=False)], [_clip(0.0, 5.0)], layout="shorts").text)
+
+    # 1920x1080 en cover sobre 1080x1920: alto completo, centrado en x
+    assert v1[1][0][4] == "00:00:00.000=-1166.67 0 3413.33 1920 1"
+
+
 def test_shorts_con_blur_agrega_pista_debajo_del_gameplay(client, monkeypatch):
     cfg = load_config()
     cfg["shorts"]["background_blur"]["enabled"] = True
@@ -251,10 +258,10 @@ def test_shorts_equivalente_a_project_short(client, videos, tmp_path):
     wc_info = ffmpeg_utils.video_info(str(videos["webcam.mp4"]))
     analysis = {
         "duration": gp_info["duration"], "gameplay_info": gp_info, "webcam_info": wc_info, "keep_segments": [],
-        "highlights": [{"time": t, "score": 1.0} for t in (3.0, 10.1, 16.0)],
+        "highlights": [],
+        "shorts": [{"start": s, "end": e, "confidence": 1.0} for s, e in [(1.0, 5.0), (8.1, 12.1), (14.0, 18.0)]],
     }
     cfg = load_config()
-    cfg["shorts"].update({"pre_roll_sec": 2.0, "post_roll_sec": 2.0, "merge_gap_sec": 1.0})
     shorts_path = project_short.build_all(
         str(videos["gameplay.mp4"]), str(videos["webcam.mp4"]), cfg, analysis, "gameplay", str(tmp_path),
     )

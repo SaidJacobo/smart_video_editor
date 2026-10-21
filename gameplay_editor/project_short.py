@@ -33,35 +33,26 @@ def _resolve_box(rect_pct, canvas_w, canvas_h):
     return x, y, w, h
 
 
-def highlight_windows(highlights, duration, pre_roll, post_roll, merge_gap):
-    raw = [(max(0.0, h["time"] - pre_roll), min(duration, h["time"] + post_roll), [h]) for h in highlights]
-    raw.sort(key=lambda w: w[0])
-    merged = []
-    for s, e, hs in raw:
-        if merged and s - merged[-1][1] <= merge_gap:
-            ps, pe, phs = merged[-1]
-            merged[-1] = (ps, max(pe, e), phs + hs)
-        else:
-            merged.append((s, e, hs))
-    return merged
-
-
-def short_rects(cfg_shorts, width, height, gp_w, gp_h, wc_w, wc_h):
+def short_rects(cfg_shorts, width, height, gp_w, gp_h, wc_w=None, wc_h=None):
     """Recuadros (x, y, w, h) del gameplay, de la webcam y del gameplay
-    blureado de fondo en un canvas de width x height."""
+    blureado de fondo en un canvas de width x height. Sin webcam (wc_w None)
+    el gameplay ocupa todo el canvas y no hay rect de webcam."""
+    blur_rect = _fit_rect_in_box("cover", (0, 0, width, height), gp_w, gp_h)
+    if wc_w is None:
+        return blur_rect, None, blur_rect
     gp_box = _resolve_box(cfg_shorts["gameplay_rect_pct"], width, height)
     wc_box = _resolve_box(cfg_shorts["webcam_rect_pct"], width, height)
     return (
         _fit_rect_in_box(cfg_shorts["gameplay_fit"], gp_box, gp_w, gp_h),
         _fit_rect_in_box(cfg_shorts["webcam_fit"], wc_box, wc_w, wc_h),
-        _fit_rect_in_box("cover", (0, 0, width, height), gp_w, gp_h),
+        blur_rect,
     )
 
 
 def _short_entries(ids, window, gp_chain, wc_chain, gp_info, wc_info, cfg_shorts, fps, width, height):
     """Entries de una ventana para cada pista: gp_audio, wc_audio, [blur],
     gp_video, wc_video. gp_chain/wc_chain son (chain_id, bin_id)."""
-    start, end, _ = window
+    start, end = window["start"], window["end"]
     in_tc, out_tc = seconds_to_tc(start, fps), seconds_to_tc(end, fps)
     frames = seconds_to_frame(end, fps) - seconds_to_frame(start, fps) + 1
     blur_cfg = cfg_shorts["background_blur"]
@@ -101,7 +92,7 @@ def build_all(gameplay_path, webcam_path, cfg, analysis, titulo, output_dir=".")
 
 def build_all_multi(sessions, cfg, titulo, output_dir="."):
     """Recorre varias sesiones (grabaciones distintas): cada sesion aporta sus
-    propios highlights/ventanas (nunca se cruzan entre grabaciones) y sus
+    propios shorts (nunca se cruzan entre grabaciones) y sus
     propios clips de origen en el bin. Todos los shorts van seguidos en una
     sola secuencia, numerados de forma continua. Si no hay ningun short no
     escribe nada y devuelve None."""
@@ -126,13 +117,7 @@ def build_all_multi(sessions, cfg, titulo, output_dir="."):
         analysis = session["analysis"]
         gp_info, wc_info = analysis["gameplay_info"], analysis["webcam_info"]
 
-        windows = highlight_windows(
-            analysis["highlights"],
-            analysis["duration"],
-            shorts_cfg["pre_roll_sec"],
-            shorts_cfg["post_roll_sec"],
-            shorts_cfg["merge_gap_sec"],
-        )
+        windows = [w for w in analysis["shorts"] if w["confidence"] >= shorts_cfg["min_confidence"]]
         if not windows:
             continue
         gp_has_audio = gp_has_audio or gp_info["has_audio"]
@@ -164,7 +149,7 @@ def build_all_multi(sessions, cfg, titulo, output_dir="."):
             for track, entry in entries.items():
                 tracks[track].append(entry)
             guides.append({"frame": total_frames, "comment": f"Short {len(guides) + 1:02d}"})
-            start, end, _ = window
+            start, end = window["start"], window["end"]
             total_frames += seconds_to_frame(end, fps) - seconds_to_frame(start, fps) + 1
 
     if not guides:

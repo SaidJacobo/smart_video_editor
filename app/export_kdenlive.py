@@ -139,11 +139,9 @@ def build(request):
         if shorts:
             guides.append({"frame": timeline_frame, "comment": f"Short {len(guides) + 1:02d}"})
             timeline_frame += frames
-            # sin webcam el rect de la webcam no se usa: van las medidas del gameplay de relleno
-            webcam_info = media.webcam or media.file
+            webcam_size = (media.webcam.width, media.webcam.height) if media.webcam else ()
             gp_rect, wc_rect, blur_rect = project_short.short_rects(
-                cfg["shorts"], width, height,
-                media.file.width, media.file.height, webcam_info.width, webcam_info.height,
+                cfg["shorts"], width, height, media.file.width, media.file.height, *webcam_size,
             )
             wc_opacity = 1.0
         else:

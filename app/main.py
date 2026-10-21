@@ -1,5 +1,5 @@
-"""API del editor: POST /api/analyze recibe los audios de gameplay y webcam y
-devuelve los tramos a conservar. Contrato en CONTRATO-CORTES.md (frontend).
+"""API del editor: POST /api/analyze recibe el audio del video (y el de la
+camara, si hay) con las categorias elegidas y devuelve los tramos a conservar. Contrato en CONTRATO-CORTES.md (frontend).
 POST /api/export/kdenlive arma el .kdenlive del timeline del editor
 (SPEC-EXPORT-KDENLIVE.md).
 
@@ -20,7 +20,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from . import export_kdenlive
 from .analyze import AnalysisError, analyze
@@ -59,15 +59,44 @@ def _unexpected_error(request, exc):
     return JSONResponse(status_code=500, content={"error": _MENSAJES[request.url.path][1]})
 
 
+class Category(BaseModel):
+    label: str = Field(min_length=1, max_length=40)
+    description: str
+    keep: bool
+
+
+class AnalysisSettings(BaseModel):
+    """Reglas de SPEC-CONTENIDO-GENERAL.md, seccion 1."""
+    contentType: Literal["gameplay", "podcast", "entrevista", "otro"]
+    description: str = Field(max_length=200)
+    categories: list[Category] = Field(min_length=2, max_length=6)
+
+    @model_validator(mode="after")
+    def _categorias_validas(self):
+        labels = [c.label.strip().casefold() for c in self.categories]
+        if not all(labels) or len(set(labels)) < len(labels):
+            raise ValueError("labels vacios o repetidos")
+        if "relleno" not in labels or not any(c.keep for c in self.categories):
+            raise ValueError("falta Relleno o ninguna en Conservar")
+        return self
+
+
 # def (no async): el analisis bloquea durante minutos y asi corre en el
 # threadpool de FastAPI en vez de trabar el event loop.
 @app.post("/api/analyze")
 def analyze_endpoint(
-    gameplay: Annotated[UploadFile, File()],
-    webcam: Annotated[UploadFile, File()],
-    webcamOffset: Annotated[float, Form(allow_inf_nan=False)],
+    main: Annotated[UploadFile, File()],
+    settings: Annotated[str, Form()],
+    secondary: Annotated[UploadFile | None, File()] = None,
+    secondaryOffset: Annotated[float | None, Form(allow_inf_nan=False)] = None,
 ):
-    return analyze(gameplay.file, webcam.file, webcamOffset)
+    try:
+        parsed = AnalysisSettings.model_validate_json(settings)
+    except ValidationError as e:
+        raise AnalysisError(422, _MENSAJES["/api/analyze"][0]) from e
+    if (secondary is None) != (secondaryOffset is None):
+        raise AnalysisError(422, _MENSAJES["/api/analyze"][0])
+    return analyze(main.file, secondary and secondary.file, secondaryOffset, parsed.model_dump())
 
 
 class AudioInfo(BaseModel):

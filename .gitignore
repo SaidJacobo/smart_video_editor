@@ -5,3 +5,4 @@ __pycache__/
 !ejemplo_*.kdenlive
 .env
 debug/
+cache/

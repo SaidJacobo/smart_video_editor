@@ -1,4 +1,4 @@
-"""Transcripcion de las dos pistas (webcam=jugador, gameplay=juego) con
+"""Transcripcion de las pistas (secondary=creador, main=contenido) con
 faster-whisper, corriendo local sin GPU dedicada. Cachea en
 <titulo>.transcripcion.json, invalidado por (mtime de los fuentes, modelo).
 
@@ -93,29 +93,31 @@ def _sources_signature(paths, cfg):
     return sig
 
 
-def transcribe(gameplay_path, webcam_path, cfg, titulo, output_dir=None, force=False):
-    """Transcribe ambas pistas por separado. cfg es cfg["transcription"]
-    (ver config.py). Devuelve {jugador: [...], juego: [...]}, cacheado."""
+def transcribe(main_path, secondary_path, cfg, titulo, output_dir=None, force=False):
+    """Transcribe cada pista por separado. cfg es cfg["transcription"] (ver
+    config.py). Devuelve {creador: [...] o None sin segundo video,
+    contenido: [...]}, cacheado."""
     cache_file = _cache_path(titulo, output_dir)
-    sig = _sources_signature([gameplay_path, webcam_path], cfg)
+    paths = [main_path] if secondary_path is None else [main_path, secondary_path]
+    sig = _sources_signature(paths, cfg)
 
     if not force and os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as fh:
                 cached = json.load(fh)
-            if cached.get("sources") == sig:
+            if cached.get("sources") == sig and "contenido" in cached:
                 return cached
         except (json.JSONDecodeError, OSError):
             pass
 
-    jugador = transcribe_track(webcam_path, "jugador", cfg)
-    juego = transcribe_track(gameplay_path, "juego", cfg)
+    creador = None if secondary_path is None else transcribe_track(secondary_path, "creador", cfg)
+    contenido = transcribe_track(main_path, "contenido", cfg)
 
     result = {
         "titulo": titulo,
         "sources": sig,
-        "jugador": jugador,
-        "juego": juego,
+        "creador": creador,
+        "contenido": contenido,
     }
     os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
     with open(cache_file, "w", encoding="utf-8") as fh:

@@ -5,19 +5,20 @@ proyectos de Kdenlive listos para el ajuste fino manual:
 
 - Transcribe ambas pistas (voz del jugador + diálogo del juego) con Whisper
   local y le pide a un LLM que clasifique el contenido de cada tramo de la
-  sesión en `divertido_interesante`, `relleno` o `neutro`. Por default se
-  conservan solo los tramos `divertido_interesante` y los que tienen diálogo
-  del juego (estos siempre, sin importar su categoría). De cada uno se toma
+  sesión en una de las categorías del preset de Gameplay
+  (`classification.categories`: Divertido, Narrativa / cinemática, Neutro,
+  Relleno). Por default se conservan solo las categorías en Conservar
+  (Divertido y Narrativa / cinemática). De cada uno se toma
   desde la primera hasta la última frase, con un margen de 8 s, y no la
-  ventana entera. `relleno`, `neutro` y los tramos sin transcripción (sin
+  ventana entera. Relleno, Neutro y los tramos sin transcripción (sin
   diálogo de ningún lado) se cortan. Con `--con-neutro` también se conserva
-  lo `neutro` y se protegen enteros los tramos sin transcripción, para no
+  lo Neutro y se protegen enteros los tramos sin transcripción, para no
   perder cinemáticas silenciosas. Ver `spec_clasificacion_contenido.md` para
   el detalle del criterio.
 - Compone el video largo con lo que sobrevive a ese filtro: gameplay a
   pantalla completa + webcam en PiP.
-- Genera shorts verticales (9:16) alrededor de cada tramo clasificado como
-  `divertido_interesante`, centrados en el momento real de habla (no en el
+- Genera shorts verticales (9:16) alrededor de cada tramo conservado en el
+  que habla el jugador, centrados en el momento real de habla (no en el
   punto medio de la ventana clasificada).
 
 No renderiza nada. La salida son archivos `.kdenlive` que abrís directo en
@@ -65,7 +66,7 @@ python3 editor.py \
 Esto genera siempre **dos archivos**: `mi_sesion_long.kdenlive` (el video
 completo con los cortes ya aplicados) y `mi_sesion_shorts.kdenlive` (una
 sola secuencia con todos los shorts seguidos, con una guide al inicio de cada uno).
-Si no hay ningún momento `divertido_interesante`, no se genera el de shorts y
+Si no hay ningún momento conservado, no se genera el de shorts y
 se avisa.
 
 Si alguno de los dos ya existe en `--output-dir`, el script **no lo pisa**:
@@ -146,14 +147,20 @@ venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
   Sin ese flag, el proxy de Vite falla con `ECONNREFUSED 172.17.0.1:8000`.
   Este flag también expone la API a la red local. Para limitarla a Docker,
   usá `--host 172.17.0.1`.
-- Endpoint: `POST /api/analyze` (`multipart/form-data` con `gameplay`,
-  `webcam` y `webcamOffset`). La request es síncrona: responde cuando termina
+- Endpoint: `POST /api/analyze` (`multipart/form-data` con `main`,
+  opcionalmente `secondary` y `secondaryOffset`, y `settings` con las
+  categorías que eligió el usuario; ver `CONTRATO-CORTES.md`). La request es síncrona: responde cuando termina
   el análisis (ver "Tiempos esperados"). Probalo primero con una grabación
   corta.
 - Si ollama no responde o no tiene el modelo, la API devuelve `502` después
   de 3 reintentos (unos 20 s). El detalle queda en la consola de uvicorn.
-- No usa cache: cada request trabaja en un directorio temporal que se borra
-  al terminar.
+- Cada request trabaja en un directorio temporal que se borra al terminar.
+  Lo único que se guarda es la transcripción y la clasificación, en
+  `cache/`, por hash de los audios: volver a analizar el mismo video no
+  repite Whisper (aun con otro offset), y con el mismo offset y las mismas
+  categorías tampoco repite las llamadas al clasificador. Con dos videos, las
+  ventanas donde solo habla el contenido (cinemáticas) pueden ir al video
+  largo pero nunca son shorts.
 
 Tests (whisper y ollama simulados, necesitan `ffmpeg`):
 
@@ -182,8 +189,7 @@ No hay flag de `--config` — los parámetros se ajustan editando
 | `long.webcam_rect_pct` | `x,y,w,h` (0–1, % del canvas) | posición/tamaño del PiP de la webcam en el video largo. Default: arriba a la derecha. |
 | `shorts.webcam_rect_pct` / `shorts.gameplay_rect_pct` | `x,y,w,h` (0–1) | las dos franjas del short: webcam arriba, gameplay abajo. `h: null` en `gameplay_rect_pct` significa "lo que quede hasta el borde". |
 | `shorts.webcam_fit` / `shorts.gameplay_fit` | `cover` \| `contain` | `cover` recorta para llenar el recuadro sin bandas negras (default); `contain` muestra el clip entero, con bandas si no matchea el aspect ratio. |
-| `shorts.pre_roll_sec` / `post_roll_sec` | segundos | cuánto antes/después de cada highlight arranca/termina el short. |
-| `shorts.merge_gap_sec` | segundos | si dos highlights caen a menos de esto, se juntan en un solo short en vez de generar dos. |
+| `shorts.min_confidence` | 0–1 | cada ventana de una categoría conservada con al menos esta confianza es un short, con el mismo margen que el video largo (`solo_relevante_padding_sec`) y sin fusionar con las vecinas. Default: 0.4, el mismo valor con el que arranca el slider del editor. |
 | `shorts.background_blur.enabled` | `true`/`false` | variante con el gameplay duplicado y blureado de fondo. Apagado por default — el default actual es los dos videos a pelo, sin blur. |
 
 ### Layout del video largo
@@ -217,7 +223,7 @@ Todavía no implementado: curaduría activa por escenario (Paso 4 del spec —
 hoy el criterio de corte es por tramo de habla independiente, no por
 situación/escenario agrupado), contexto visual (v3.2), sincronización
 automática de audio/video (el CLI asume que gameplay y webcam arrancan en el
-mismo instante; la API recibe el desfase como `webcamOffset`) y
+mismo instante; la API recibe el desfase como `secondaryOffset`) y
 normalización de loudness — esto último se sigue ajustando a
 mano en Kdenlive. Ver `spec_clasificacion_contenido.md` para el detalle y el
 estado de cada punto.
